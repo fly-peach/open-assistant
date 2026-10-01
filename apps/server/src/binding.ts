@@ -27,14 +27,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 import { AgentError } from "./agents/errors.js";
-import {
-  agentExists,
-  ensureAgent,
-  isValidAgentId,
-  listAgents,
-  readAgent,
-  type AgentStartupStatus,
-} from "./agents/registry.js";
+import { agentExists, ensureAgent, readAgent } from "./agents/registry.js";
 import { DEFAULT_AGENT_ID, DEFAULT_AGENT_NAME } from "./agents/root.js";
 import {
   claimWorkspaceDir,
@@ -253,7 +246,6 @@ async function archiveSessions(workspaceDir: string, agentId: string): Promise<s
 export interface WriteBindingOptions {
   mode?: SwitchMode;
   reason?: string;
-  displayName?: string;
 }
 
 export interface WriteBindingResult {

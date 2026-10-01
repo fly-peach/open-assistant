@@ -2,7 +2,7 @@
 
 **项目定位**：基于 subagents 的个人助手 agent —— 用户个人的 todo 管理 + 长期记忆 + 主动唤醒。
 **技术约束**：前后端**全部 TypeScript**。
-**日期**：2026-09-30
+**日期**：2026-09-30（当前状态一节更新于 2026-10-01）
 **依据**：LangChain 官方文档（JS 版）、`deepagents` 包内 `.d.ts` 实读、QwenPaw 源码实读、Karpathy LLM Wiki gist、OpenDesign 前端源码。
 **方法论**：结论分三级标注 —— `[实证]` 直接读到代码/类型/原文；`[文档]` 官方文档声称；`[推测]` 推断未验证。
 
@@ -12,41 +12,62 @@
 
 ---
 
-## 当前状态（2026-10-01 收口）
+## 当前状态（2026-10-01 第二次收口）
 
-> 一句话：**M0 已落地成一个能跑、能对话、能管工作区与 TODO 的完整基座**；子 agent、cron、heartbeat、wiki 尚未开始。
+> 一句话：**基座（M0）已落地；`add-custom-agents` 做到 67/139 —— 智能体注册与配置、工作区绑定、
+> 长期记忆、定时任务、项目知识图谱、消息频道都已可用**；子智能体系统与频道运行时接线尚未开始。
 
-### 已实现（openspec 变更 `bootstrap-deep-agent`，89/89 任务）
+### 已实现
+
+**变更 1 · `bootstrap-deep-agent`（已归档，89/89）**
 
 | capability | 内容 |
 |---|---|
 | `agent-core` | 对话循环 / 流式 / 人设装载 / **首次引导（BOOTSTRAP.md）** / 工具调用可见性 |
-| `session-store` | 会话持久化 / 隔离 / 按工作区检索 / 上下文压缩 / 压缩不静默丢失 |
+| `session-store` | 会话持久化 / 隔离 / 按工作区检索 / 上下文压缩 |
 | `workspace` | **本机路径工作区**（非服务端 id）/ 路径约束 / **显式初始化按钮** / 人设保护 / 凭据分离 |
 | `chat-ui` | 全中文 / **回合聚合** / 思考展示 / **按类型分发的工具卡片** / 宽窄模式 |
 | `file-workspace-ui` | 文件树 / 按类型分流渲染 / **TODO 专用视图** / 改动可见 |
 | `todo-store` | JSON 单文件事实源 / 四个 agent 工具 / 原子写 + 409 乐观并发 |
 | `app-shell` | 左导航 + 顶栏 + **分段路由** / **可停靠面板** / 导航可配置 / 插槽 / 页面级故障隔离 |
 
-**验证状态**：后端 77 pass · 前端 114 pass · 两端 `tsc --noEmit` 干净 · `openspec validate --strict` 通过。
+**变更 2 · `add-custom-agents`（进行中，67/139）**
+
+| capability | 状态 | 内容 |
+|---|---|---|
+| `agent-registry` | ✅ | 智能体定义 / 配置项（人设·模型·工具白名单·审批级别）/ 技能 / **跨工作区长期记忆** |
+| `agent-binding` | ✅ | **智能体 ↔ 工作区 1:1**；一个目录只能由一位维护（冲突 409 并指出占用者）；换绑可追溯（keep / archive） |
+| `runtime-host` | ✅ | 运行期身份只认绑定（不采信客户端传来的 agent_id）；模型解析链 |
+| `agent-scheduling` | ✅ | 定时任务（cron）/ 一次性任务 / 执行器 / 会话归属 |
+| `project-wiki` | ✅ | 索引 / 知识图谱（边抽取·声明式 relations·全量重建）/ 归档 / lint |
+| `channels` | 🟡 12/56 | 字段类型系统 / 目录 / 凭据库（掩码）/ 有界去重 / 退避 / **QQ 网关客户端（离线测通）**；飞书与运行时接线未做 |
+| `channels-ui` | 🟡 22/29 | 配置区块长在智能体配置页 / 字段驱动表单 / 掩码 / 配置状态（未配置·已配置·已启用） |
+| `agent-skills` | 🟡 4/14 | 技能装载与渐进披露 |
+| `multi-agent-comms` | 🟡 6/20 | 同侪互交（进行中，见 `add-subagent-orchestration`） |
+| `session-store` / `todo-store` / `workspace` | — | 本次变更对它们的增量（大部分未开始） |
+
+**验证状态**：后端 **400 pass** · 前端 **194 pass** · 会话库（Node）**14 pass** · 两端 `tsc --noEmit` 干净 ·
+`openspec validate --strict` 通过。
 
 ### 怎么跑
 
 ```bash
 bun install
-bun run dev:server     # http://localhost:2024 （agent + langgraph dev）
+bun run dev:server     # http://localhost:2024（agent + langgraph dev）
 bun run dev:web        # http://localhost:3000
 bun run smoke          # 后端冒烟
-bun run --cwd apps/server probe:patch   # 上游 role 缺失 bug 的回归探针
+bun run --cwd apps/server test              # 后端测试
+bun run --cwd apps/server test:conversation # 会话库测试（必须用 Node 跑）
+bun run --cwd apps/web test                 # 前端测试
 ```
-密钥在 `apps/server/.env`（已 gitignore，从 `~/.pi/agent/auth.json` 取的 token-plan key）。
+密钥在 `apps/server/.env`（已 gitignore）。截图见 `docs/images/`，项目介绍见 `README.md`。
 
-### 尚未开始（roadmap 后续里程碑）
+### 尚未开始
 
-- **M1/M3 子 agent 系统** —— 最大未做项；**D1（子 agent 独立 checkpoint）仍未 spike**
-- **M2 会话持久化与压缩** —— 见「已知遗留 0」：持久化被平台接管、**压缩完全未实现**（checkpoint 只增不减）
-- M5 cron 、M6 heartbeat + wiki、长期记忆
-- 子 agent 的「同侪互交」按钮语义（用户说待讨论）
+- **子智能体系统（M3）** —— 最大未做项；**D1（子 agent 独立 checkpoint）仍未 spike**
+- **频道运行时接线** —— 现在「配好了但没人去连」：agent 启动时读启用频道 → 建网关 → 收到消息灌进会话
+- **飞书频道**（QQ 已实现且离线测通）
+- **心跳维护（M6）** —— 默认 `HEARTBEAT.md` 已生成，但没有调度器去跑它
 - 前端数据层迁 `@langchain/react` v1；`packages/contracts` 共享类型包（目前类型内联在各自 app）
 
 ### 已知遗留（不影响主流程）
@@ -58,10 +79,22 @@ bun run --cwd apps/server probe:patch   # 上游 role 缺失 bug 的回归探针
    - 附带约束：`better-sqlite3` **在 bun 下完全不可用**（`bun:sqlite` 才是其内置方案），所以 SQLite checkpointer 只能跑在 Node 侧（测试/探针脚本用 bun 跑会报 `ERR_DLOPEN_FAILED`）
    - 三个待选方向：**① 自托管运行时**（不用 `langgraph dev`，自己用现成的 Hono app 暴露 thread/run/SSE，checkpointer 按工作区开库）—— 推荐，且能一并解决下面的 D1；② 保留 dev server，修 spec 迁就现实；③ 双写：跑在 server 但每次结束后把 messages 导出到工作区（副本）
 
-1. **两处未实测的边角**：`prefers-reduced-motion` 下跳过面板位移动画；面板「收起后重开宽度恢复」（只测了停靠↔浮动）
-2. **上游 bug 绕过**：provider 省略首个 delta 的 `role` → `ChatMessageChunk` → LangGraph `AgentNode` 硬失败（~25% 概率）。已用 `RobustChatOpenAI` 根因修复（见 `apps/server/src/model.ts`），**值得给 `@langchain/openai` 报 issue**
-3. **旧 thread 的 workspace metadata 仍是 id 字符串**（`"default"` 而非绝对路径）—— 当前前端不按工作区过滤 thread 所以无可见问题；将来加过滤时需一次性重写
-4. `/cron`、`/memory` 是**占位页**（当时为验证「扩展条目可隐藏」而造）
+1. **`agent_id` 已有但没接线（2026-10-01 查明）**
+   - 我们自己的会话库 schema 里 `threads.agent_id TEXT NOT NULL` + 索引都在，`ListThreadsOptions.agentId` 过滤器也实现了，但**没有任何调用方**
+   - 真正在跑的会话在 langgraph 那边，thread metadata 只有 `workspace / graph_id / assistant_id`，**没有 agent_id 维度**；归属暂时记在旁挂的 `.open-assistant/sessions-agents.json`
+   - `binding.ts` 的注释写着「等 sqlite `threads.agent_id` 上线后可平滑替换」—— 那个列早就有了，是**没接**
+   - 三个方向：**(A) 把 agent_id 写进 langgraph thread metadata**（改动小，且能删掉旁挂文件）← 推荐；(B) 真正启用我们自己的会话库（大改）；(C) 维持现状
+   - 附带：`http.ts` 里**一条会话路由都没有**，界面上的会话列表完全来自 langgraph SDK，我们自己的会话库对前端是隐形的
+
+2. **`sessions.sqlite` 是 0 字节空壳** —— 说明会话库在聊天这条路线上从没被打开过（`openConversationDb` 会建表）。全项目里往会话库写线程的唯一运行时调用点是 `jobs/session.ts`
+
+3. **两处未实测的边角**：`prefers-reduced-motion` 下跳过面板位移动画；面板「收起后重开宽度恢复」（只测了停靠↔浮动）
+
+4. **上游 bug 绕过**：provider 省略首个 delta 的 `role` → `ChatMessageChunk` → LangGraph `AgentNode` 硬失败（~25% 概率）。已用 `RobustChatOpenAI` 根因修复（见 `apps/server/src/model.ts`），**值得给 `@langchain/openai` 报 issue**
+
+5. **旧 thread 的 workspace metadata 仍是 id 字符串**（`"default"` 而非绝对路径）—— 当前前端不按工作区过滤 thread 所以无可见问题；将来加过滤时需一次性重写
+
+6. `/cron`、`/memory` 曾经是占位页，现在已是实页；`/settings` 仍偏薄
 
 ---
 

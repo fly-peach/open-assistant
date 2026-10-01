@@ -9,7 +9,7 @@
  * 表单**按字段定义自动渲染**（`ChannelField` 带 type），所以以后加频道只加后端字段，
  * 这个组件不用改。凭据字段只回掩码；空着提交 = 不动原值，点「清除」才清。
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";

@@ -11,7 +11,6 @@
  */
 import { listAgents, type AgentStartupStatus } from "./agents/registry.js";
 import { readBinding } from "./binding.js";
-import { DEFAULT_AGENT_ID } from "./agents/root.js";
 import { resolveWorkspaceDir } from "./workspace.js";
 
 /** 路径归一化比较：Windows 的大小写 / 分隔符 / 结尾分隔符都算同一个目录 */
@@ -89,12 +88,14 @@ export async function readAgentProfilesView(
 
 /**
  * 选择器里「能不能切过去」。
- * 不能切的两种：目录没指定、agent 被停用 —— 都由这里一句话说清，界面不用重复判断。
+ *
+ * 这是这条规则的**权威定义**，前端 `agentProfilesApi.switchBlockReason` 是它的镜像
+ * （前端不能 import 服务端代码，所以那份是复制的；改规则时两边要一起改）。
+ * 返回原因码而不是句子：措辞属于界面，规则属于这里。
  */
 export function switchBlockReason(entry: AgentProfileEntry): string | null {
   if (!entry.enabled) return "disabled";
   if (entry.valid === false) return "invalid";
   if (!entry.workspaceDir) return "no-workspace";
-  if (entry.id === DEFAULT_AGENT_ID && !entry.workspaceDir) return "no-workspace";
   return null;
 }

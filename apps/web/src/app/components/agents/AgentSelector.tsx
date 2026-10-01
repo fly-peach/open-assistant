@@ -21,7 +21,7 @@
  * 差异：我们的状态只发 `running / disabled / failed`，不造假 `pending / starting`
  * （我们的 agent 是文件定义，没有异步启动过程）。
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, ChevronDown, ChevronRight, Pin, Power, PowerOff } from "lucide-react";
 
 import {

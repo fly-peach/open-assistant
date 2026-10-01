@@ -9,7 +9,7 @@
  *
  * 1:1 的另一半由后端强制：一个目录已经由别的 agent 维护时，这里是 409 并给出是谁。
  */
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DirectoryPicker } from "@/app/components/workspace/DirectoryPicker";
