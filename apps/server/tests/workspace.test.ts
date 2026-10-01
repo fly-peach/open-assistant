@@ -20,7 +20,13 @@ import {
   workspaceSessionIndexPath,
   workspaceTodosPath,
 } from "../src/workspace.js";
-import { createThreadForWorkspace, readWorkspaceSessionIndex, upsertWorkspaceSessionIndex } from "../src/sessions.js";
+import {
+  backfillThreadOwnership,
+  createThreadForWorkspace,
+  readWorkspaceSessionIndex,
+  stampThreadOwnership,
+  upsertWorkspaceSessionIndex,
+} from "../src/sessions.js";
 
 let root: string;
 
@@ -287,6 +293,186 @@ describe("8.6 应用数据落在 <工作区>/.open-assistant/", () => {
     const index = await readWorkspaceSessionIndex(p);
     expect(index.sessions.map((s) => s.id)).toContain("t-1");
     expect((await fs.readdir(real)).includes("sessions.json")).toBe(false);
+  });
+
+  test("stampThreadOwnership：把工作区 + 创建时 agent 合并写进平台 thread metadata", async () => {
+    const calls: Array<{ threadId: string; metadata?: Record<string, unknown> }> = [];
+    const fakeClient = {
+      threads: {
+        update: async (threadId: string, payload: { metadata?: Record<string, unknown> }) => {
+          calls.push({ threadId, metadata: payload.metadata });
+          return { thread_id: threadId };
+        },
+      },
+    } as unknown as Parameters<typeof stampThreadOwnership>[2];
+
+    const p = await newWorkspaceDir("thread-ownership");
+    const ok = await stampThreadOwnership(
+      "01a0f707-3b3f-702a-8efd-c357b2c400f0",
+      { workspace: p, agentId: "writer" },
+      fakeClient,
+    );
+    expect(ok).toBe(true);
+    // 只传我们要管的两个键：平台 PATCH 是合并语义，不会冲掉 graph_id / assistant_id
+    expect(calls[0]!.metadata).toEqual({ workspace: p, agent_id: "writer" });
+  });
+
+  test("stampThreadOwnership：非 UUID 的 thread_id 直接跳过（平台 PATCH 只接受 UUID）", async () => {
+    let called = false;
+    const fakeClient = {
+      threads: {
+        update: async () => {
+          called = true;
+          return {};
+        },
+      },
+    } as unknown as Parameters<typeof stampThreadOwnership>[2];
+    const ok = await stampThreadOwnership("thread-before", { workspace: "/tmp/ws" }, fakeClient);
+    expect(ok).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  test("stampThreadOwnership：平台报错时 best-effort 返回 false，不影响本轮对话", async () => {
+    const fakeClient = {
+      threads: {
+        update: async () => {
+          throw new Error("404 Thread not found");
+        },
+      },
+    } as unknown as Parameters<typeof stampThreadOwnership>[2];
+    const ok = await stampThreadOwnership(
+      "01a0f707-3b3f-702a-8efd-c357b2c400f0",
+      { workspace: "/tmp/ws", agentId: "writer" },
+      fakeClient,
+    );
+    expect(ok).toBe(false);
+  });
+});
+
+describe("历史会话归属回填（让旧 thread 按工作区过滤后仍可见）", () => {
+  /** 造一个只支持 search / update 的假平台 client */
+  function fakeClient(
+    threads: Array<Record<string, unknown>>,
+    calls: Array<{ id: string; metadata?: Record<string, unknown> }>,
+  ) {
+    return {
+      threads: {
+        search: async (q: { limit?: number; offset?: number } = {}) => {
+          const limit = q.limit ?? 100;
+          const offset = q.offset ?? 0;
+          return threads.slice(offset, offset + limit);
+        },
+        update: async (id: string, payload: { metadata?: Record<string, unknown> }) => {
+          calls.push({ id, metadata: payload.metadata });
+          return { thread_id: id };
+        },
+      },
+    } as unknown as Parameters<typeof backfillThreadOwnership>[0];
+  }
+
+  /** 写工作区绑定（readBinding 不校验 agent 是否存在） */
+  async function writeBindingFile(ws: string, agentId: string): Promise<void> {
+    await fs.mkdir(workspaceAppDataDir(ws), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceAppDataDir(ws), "project.json"),
+      JSON.stringify({ version: 2, agentId, createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+  }
+
+  test("把旧的（错误）默认工作区修正成 config.configurable 里的真实工作区，并补 agent_id", async () => {
+    const ws = await newWorkspaceDir("backfill-real");
+    await writeBindingFile(ws, "writer");
+    const threads = [
+      {
+        thread_id: "01a0f707-3b3f-702a-8efd-c357b2c400f0",
+        metadata: { workspace: "C:\\stale\\default" },
+        config: { configurable: { workspace: ws } },
+      },
+    ];
+    const calls: Array<{ id: string; metadata?: Record<string, unknown> }> = [];
+    const result = await backfillThreadOwnership(fakeClient(threads, calls), {
+      defaultWorkspacePath: ws,
+    });
+    expect(result.updated).toBe(1);
+    expect(result.unchanged).toBe(0);
+    expect(calls[0]!.metadata).toMatchObject({ workspace: ws, agent_id: "writer" });
+  });
+
+  test("agent_id 取创建时归属（旁挂标注），不覆盖已有 agent_id", async () => {
+    const ws = await newWorkspaceDir("backfill-owner");
+    await writeBindingFile(ws, "current-agent");
+    await fs.writeFile(
+      path.join(workspaceAppDataDir(ws), "sessions-agents.json"),
+      JSON.stringify({
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        owners: { "01a0f707-3b3f-702a-8efd-c357b2c400f0": "original-agent" },
+      }),
+      "utf8",
+    );
+    const threads = [
+      {
+        thread_id: "01a0f707-3b3f-702a-8efd-c357b2c400f0",
+        metadata: {},
+        config: { configurable: { workspace: ws } },
+      },
+      {
+        thread_id: "01a0f708-1111-7000-8000-000000000000",
+        metadata: { agent_id: "keep-me" },
+        config: { configurable: { workspace: ws } },
+      },
+    ];
+    const calls: Array<{ id: string; metadata?: Record<string, unknown> }> = [];
+    await backfillThreadOwnership(fakeClient(threads, calls), { defaultWorkspacePath: ws });
+    expect(calls[0]!.metadata?.["agent_id"]).toBe("original-agent");
+    // 第二条已有 agent_id，不再被回填覆盖
+    expect(calls[1]!.metadata?.["agent_id"]).toBeUndefined();
+  });
+
+  test("完全没有归属时兜底到默认工作区（旧行为保留）", async () => {
+    const def = await newWorkspaceDir("backfill-default");
+    const threads = [
+      { thread_id: "01a0f709-2222-7000-8000-000000000000", metadata: {}, config: {} },
+    ];
+    const calls: Array<{ id: string; metadata?: Record<string, unknown> }> = [];
+    await backfillThreadOwnership(fakeClient(threads, calls), { defaultWorkspacePath: def });
+    expect(calls[0]!.metadata?.["workspace"]).toBe(def);
+  });
+
+  test("config 里的工作区不是绝对路径（旧 id）→ 忽略，不把归属指向它", async () => {
+    const def = await newWorkspaceDir("backfill-badcfg");
+    const threads = [
+      {
+        thread_id: "01a0f70a-3333-7000-8000-000000000000",
+        metadata: {},
+        config: { configurable: { workspace: "default" } },
+      },
+    ];
+    const calls: Array<{ id: string; metadata?: Record<string, unknown> }> = [];
+    await backfillThreadOwnership(fakeClient(threads, calls), { defaultWorkspacePath: def });
+    expect(calls[0]!.metadata?.["workspace"]).toBe(def);
+  });
+
+  test("归属已正确 → unchanged，不发出 update；dryRun 只统计不写", async () => {
+    const ws = await newWorkspaceDir("backfill-noop");
+    await writeBindingFile(ws, "writer");
+    const threads = [
+      {
+        thread_id: "01a0f70b-4444-7000-8000-000000000000",
+        metadata: { workspace: ws, agent_id: "writer" },
+        config: { configurable: { workspace: ws } },
+      },
+    ];
+    const calls: Array<{ id: string; metadata?: Record<string, unknown> }> = [];
+    const client = fakeClient(threads, calls);
+    const result = await backfillThreadOwnership(client, { defaultWorkspacePath: ws });
+    expect(result.unchanged).toBe(1);
+    expect(calls.length).toBe(0);
+
+    const dry = await backfillThreadOwnership(client, { defaultWorkspacePath: ws, dryRun: true });
+    expect(dry.updated + dry.unchanged).toBe(1);
+    expect(calls.length).toBe(0);
   });
 });
 

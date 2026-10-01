@@ -69,6 +69,16 @@ export function teamDirPath(agentId: string, root: string = getAgentsRoot()): st
   return path.join(agentDirPath(agentId, root), AGENT_TEAM_DIR);
 }
 
+/**
+ * 共享技能池目录绝对路径（`<agents 根>/_shared/skills`，对齐 design D8）。
+ *
+ * 新 agent **继承**这里的技能；同名时 agent 私有技能覆盖共享技能。用户可在这里
+ * 扩充给所有 agent 用的技能，也可在每个 agent 的 `skills/` 下增加自己的。
+ */
+export function sharedSkillsDirPath(root: string = getAgentsRoot()): string {
+  return path.join(root, SHARED_SKILLS_DIR, "skills");
+}
+
 /** 按需创建 agents 根目录（首次使用创建根目录） */
 export async function ensureAgentsRoot(): Promise<string> {
   const root = getAgentsRoot();

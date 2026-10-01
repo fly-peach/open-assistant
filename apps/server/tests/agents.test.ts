@@ -44,6 +44,7 @@ import { loadPersona } from "../src/persona.js";
 import {
   readBinding,
   readSessionOwners,
+  stampSessionOwner,
   workspaceProjectPath,
   writeBinding,
 } from "../src/binding.js";
@@ -430,7 +431,10 @@ describe("1.7 人设三档优先级", () => {
     await writeBinding(withAgent, "tier-agent");
     const a = makeAgentGraph(withAgent, [new AIMessage("ok")]);
     await a.graph.invoke({ messages: [userMessage("hi")] }, { configurable: { workspace: withAgent } });
-    expect((a.model.calls[0]![0] as SystemMessage).text).toContain("第一档：agent 人设");
+    const sysA = (a.model.calls[0]![0] as SystemMessage).text;
+    expect(sysA).toContain("第一档：agent 人设");
+    // 技能渐进披露：只注入名称 + 用途（该 agent 继承共享池的基础技能）
+    expect(sysA).toContain("<agent_skills>");
 
     const withWorkspace = await freshWorkspace("tier-run-ws");
     await writeBinding(withWorkspace, "tier-empty");
@@ -444,7 +448,8 @@ describe("1.7 人设三档优先级", () => {
     const c = makeAgentGraph(builtin, [new AIMessage("ok")]);
     await c.graph.invoke({ messages: [userMessage("hi")] }, { configurable: { workspace: builtin } });
     const sysC = (c.model.calls[0]![0] as SystemMessage).text;
-    expect(sysC).toBe("内置默认人设");
+    // 第三档：不注入 <persona>（技能是另一回事——所有 agent 继承共享池，会有 <agent_skills>）
+    expect(sysC).toContain("内置默认人设");
     expect(sysC).not.toContain("<persona>");
   });
 });
@@ -646,6 +651,14 @@ describe("1.11 换绑：keep / archive 与换绑痕迹", () => {
     owners = await readSessionOwners(ws);
     expect(owners["thread-before"]).toBe("writer");
     expect(owners["thread-after"]).toBe("memo");
+  });
+
+  test("stampSessionOwner 返回实际归属：已有标注时不覆盖（保留「创建时是谁」）", async () => {
+    const ws = await freshWorkspace("stamp-owner");
+    expect(await stampSessionOwner(ws, "t-1", "writer")).toBe("writer");
+    // 换绑后再盖：幂等，不覆盖历史归属（前端「由 xxx 创建」据此标注）
+    expect(await stampSessionOwner(ws, "t-1", "memo")).toBe("writer");
+    expect((await readSessionOwners(ws))["t-1"]).toBe("writer");
   });
 });
 

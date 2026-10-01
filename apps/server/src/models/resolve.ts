@@ -258,6 +258,20 @@ export function requireReady(resolved: ResolvedModelConfig | null): ResolvedMode
  */
 const modelCache = new Map<string, RobustChatOpenAI>();
 
+/** 429/5xx 的重试次数（OpenAI SDK 会指数退避 + 尊重 Retry-After）。
+ * MaaS 网关对「短时间请求过快」会返回 429（`Request rate increased too quickly`），
+ * 默认 2 次不时够；可用 `MODEL_MAX_RETRIES` 覆盖。 */
+function maxRetries(): number {
+  const n = Number(process.env.MODEL_MAX_RETRIES);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;
+}
+
+/** 单次请求超时（ms）；可用 `MODEL_TIMEOUT_MS` 覆盖，默认 120s */
+function requestTimeoutMs(): number {
+  const n = Number(process.env.MODEL_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 120_000;
+}
+
 export function buildChatModel(resolved: ResolvedModelConfig): RobustChatOpenAI {
   const key = `${resolved.baseUrl}|${resolved.modelId}|${resolved.apiKey.slice(-6)}`;
   const cached = modelCache.get(key);
@@ -267,6 +281,9 @@ export function buildChatModel(resolved: ResolvedModelConfig): RobustChatOpenAI 
     apiKey: resolved.apiKey,
     temperature: 0,
     configuration: { baseURL: resolved.baseUrl },
+    // 限流/瞬时故障的退避重试（与 agent.ts 的建图占位模型分开，模型真实在跑的是这个）
+    maxRetries: maxRetries(),
+    timeout: requestTimeoutMs(),
   });
   modelCache.set(key, model);
   return model;

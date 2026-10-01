@@ -34,6 +34,7 @@ import { useChatContext } from "@/providers/ChatProvider";
 import { useWorkspaceContext } from "@/providers/WorkspaceProvider";
 import { useBindingState } from "@/app/hooks/useAgents";
 import { canSendWithBinding } from "@/app/utils/agentConfig";
+import { chatErrorText } from "@/app/utils/chatError";
 import { cn } from "@/lib/utils";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { FilesPopover } from "@/app/components/TasksFilesSidebar";
@@ -111,6 +112,7 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(({ assistant }) => {
     setFiles,
     isLoading,
     isThreadLoading,
+    error,
     interrupt,
     sendMessage,
     stopStream,
@@ -444,6 +446,14 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(({ assistant }) => {
             onSubmit={handleSubmit}
             className="flex flex-col"
           >
+            {chatErrorText(error) && (
+              <p
+                className="border-b border-border bg-destructive/10 px-4 py-2 text-xs text-destructive"
+                data-chat-error
+              >
+                {chatErrorText(error)}
+              </p>
+            )}
             {!workspacePath && (
               <p className="border-b border-border px-4 py-2 text-xs text-[var(--color-warning)]">
                 {zh.workspace.requiredHint}

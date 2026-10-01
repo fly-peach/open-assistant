@@ -30,14 +30,17 @@ import { WorkspaceSidebar } from "@/app/components/workspace/WorkspaceSidebar";
 import { ThreadIdBadge } from "@/app/components/threads/ThreadIdBadge";
 import { PathLabel } from "@/app/components/workspace/PathLabel";
 import { DockablePanel } from "@/app/components/panel/DockablePanel";
+import { FirstRunOnboarding } from "@/app/components/onboarding/FirstRunOnboarding";
 import zh from "@/i18n/zh";
 
 /** 工作区侧边栏展开状态在 localStorage 的键。 */
 const WS_PANEL_KEY = "open-assistant.workspace-panel";
+/** 首次运行引导是否已完成的键（完成过就不再弹）。 */
+const ONBOARD_KEY = "open-assistant.onboarded";
 /** 工作区面板停靠时的固定宽度（px）。
- * 360 太窄：文件树要显示路径、预览要放代码与 TODO 卡片，都会被挤得难看。
- * 480 让路径与长文件名能完整展示（面板内的错位大多来自宽度不足而不是样式写错）。 */
-const WORKSPACE_PANEL_WIDTH = 480;
+ * 面板现在是两栏文件浏览器（左＝文件列表 248，右＝文件内容），太窄会挤坏右栏。
+ * 720 让两栏都能舒展（列表 + 预览的代码/表格）。 */
+const WORKSPACE_PANEL_WIDTH = 720;
 
 interface ChatWorkspaceProps {
   assistant: Assistant | null;
@@ -51,11 +54,18 @@ export function ChatWorkspace({ assistant }: ChatWorkspaceProps) {
   const [mutateThreads, setMutateThreads] = useState<(() => void) | null>(null);
   const [interruptCount, setInterruptCount] = useState(0);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // 恢复上次的展开/收起状态（面板常驻，收起只让出宽度、内容不卸载）。
   useEffect(() => {
     if (typeof window === "undefined") return;
     setWorkspaceOpen(window.localStorage.getItem(WS_PANEL_KEY) === "1");
+    setShowOnboarding(window.localStorage.getItem(ONBOARD_KEY) !== "1");
+  }, []);
+
+  const dismissOnboarding = useCallback(() => {
+    setShowOnboarding(false);
+    if (typeof window !== "undefined") window.localStorage.setItem(ONBOARD_KEY, "1");
   }, []);
 
   const handleWorkspaceOpenChange = useCallback((next: boolean) => {
@@ -179,6 +189,8 @@ export function ChatWorkspace({ assistant }: ChatWorkspaceProps) {
           <WorkspaceSidebar onClose={toggleWorkspace} />
         </DockablePanel>
       </div>
+
+      {showOnboarding && <FirstRunOnboarding onDismiss={dismissOnboarding} />}
     </div>
   );
 }

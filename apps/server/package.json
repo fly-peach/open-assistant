@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "langgraphjs dev",
+    "dev": "langgraphjs dev --no-browser",
     "smoke": "bun run scripts/smoke.ts",
     "test": "bun test",
     "test:conversation": "tsc -p tsconfig.conversation.json && node --no-warnings --test .conversation-test-build/scripts/test-conversation.js",

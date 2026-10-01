@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { listFsDir, listFsRoots } from "@/lib/workspaceApi";
+import { listFsDir, listFsRoots, pickNativeFolder } from "@/lib/workspaceApi";
 import {
   isAbsolutePath,
   joinPath,
@@ -62,6 +62,7 @@ export function DirectoryPicker({
   const [inputError, setInputError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [nativeBusy, setNativeBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // 打开时定位到当前工作区（若有），否则从磁盘/根开始。
@@ -179,6 +180,26 @@ export function DirectoryPicker({
     void handleConfirm(joinPath(current, name), true);
   }, [current, newName, handleConfirm]);
 
+  /** 在后端所在机器上弹系统「选择文件夹」对话框（本项目就跑在你自己电脑上） */
+  const handleNativePick = useCallback(async () => {
+    setNativeBusy(true);
+    setActionError(null);
+    try {
+      const result = await pickNativeFolder();
+      if (result.path) {
+        await handleConfirm(result.path, false);
+      } else if (!result.cancelled) {
+        setActionError(t(zh.fs.nativeFailed, { error: result.error ?? "" }));
+      }
+    } catch (err) {
+      setActionError(
+        t(zh.fs.nativeFailed, { error: String((err as Error).message ?? err) })
+      );
+    } finally {
+      setNativeBusy(false);
+    }
+  }, [handleConfirm]);
+
   const listingError = current === null ? roots.error : dir.error;
   const isLoading = current === null ? roots.isLoading : dir.isLoading;
   const listingErrorMessage = listingError
@@ -194,6 +215,27 @@ export function DirectoryPicker({
           <DialogTitle>{zh.fs.title}</DialogTitle>
           <DialogDescription>{zh.fs.description}</DialogDescription>
         </DialogHeader>
+
+        {/* 首选：直接弹本机系统文件夹对话框（拿到真实绝对路径，无需逐层浏览） */}
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-[var(--color-surface)] px-3 py-2">
+          <button
+            type="button"
+            onClick={() => void handleNativePick()}
+            disabled={nativeBusy || busy}
+            data-fs-native-pick
+            className="flex shrink-0 items-center gap-1.5 rounded bg-[var(--color-primary)] px-2.5 py-1.5 text-xs text-white disabled:opacity-50"
+          >
+            {nativeBusy ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Folder size={13} />
+            )}
+            {zh.fs.nativePick}
+          </button>
+          <span className="min-w-0 flex-1 text-[11px] text-[var(--color-text-secondary)]">
+            {zh.fs.nativeHint}
+          </span>
+        </div>
 
         {/* 当前目录的完整绝对路径（8.10）+ 过长时中间省略（8.11） */}
         <div className="min-w-0 rounded-md border border-border bg-[var(--color-surface)] px-3 py-2">

@@ -17,7 +17,7 @@
  * 后端尚未就绪时这些端点会 404 / 网络失败，客户端统一抛 `WorkspaceApiError`，
  * 页面据此展示可读的错误态（而不是静默成功）。
  */
-import { request, WorkspaceApiError } from "@/lib/workspaceApi";
+import { getBaseUrl, request, WorkspaceApiError } from "@/lib/workspaceApi";
 
 export { WorkspaceApiError };
 
@@ -48,10 +48,16 @@ export interface AgentsRoot {
   agents: AgentSummary[];
 }
 
-/** 技能（渐进披露：只有名称与描述会随运行注入）。 */
+/** 技能（渐进披露：只有名称与描述会随运行注入）。共享池 + 私有，同名私有优先。 */
 export interface AgentSkill {
   name: string;
   description: string;
+  /** 来源：agent 私有 / 共享池（继承） */
+  source: "agent" | "shared";
+  /** 该技能是否被本 agent 关闭 */
+  disabled: boolean;
+  /** agent 私有技能覆盖了同名共享技能 */
+  overridesShared: boolean;
 }
 
 /** 智能体配置。字段以后端 `config.json` 为准（`apps/server/src/agents/config.ts`）。 */
@@ -69,6 +75,8 @@ export interface AgentConfig {
   model?: AgentModelConfig | null;
   /** 工具白名单：组 → 是否启用（布尔映射）。 */
   tools?: Record<string, boolean>;
+  /** 被本 agent 关闭的技能名 */
+  disabledSkills?: string[];
   approval?: string;
   allowSiblingInteraction?: boolean;
   contactableAgents?: string[];
@@ -164,7 +172,13 @@ export function normalizeAgentDetail(id: string, raw: unknown): AgentDetail {
         const skill = asRecord(item);
         const name = asString(skill.name);
         if (!name) return null;
-        return { name, description: asString(skill.description) ?? "" };
+        return {
+          name,
+          description: asString(skill.description) ?? "",
+          source: asString(skill.source) === "agent" ? "agent" : "shared",
+          disabled: skill.disabled === true,
+          overridesShared: skill.overridesShared === true,
+        };
       })
       .filter((item): item is AgentSkill => item !== null),
   };
@@ -243,6 +257,99 @@ export function deleteAgent(id: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(`/agents/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+}
+
+// —— 技能（增删 + 启用/关闭；共享技能只能开/关，不能删）——
+
+/** 新增 agent 私有技能 */
+export function createAgentSkill(
+  id: string,
+  body: { name: string; description?: string; content?: string }
+): Promise<{ name: string }> {
+  return request<{ name: string }>(`/agents/${encodeURIComponent(id)}/skills`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** 启用 / 关闭某个技能 */
+export function setAgentSkillEnabled(
+  id: string,
+  name: string,
+  enabled: boolean
+): Promise<{ name: string; enabled: boolean; disabledSkills: string[] }> {
+  return request(`/agents/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+/** 删除 agent 私有技能 */
+export function deleteAgentSkill(id: string, name: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/agents/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}`,
+    { method: "DELETE" }
+  );
+}
+
+/** 单个技能的详情（含 SKILL.md 正文） */
+export interface AgentSkillDetail extends AgentSkill {
+  content: string;
+}
+
+export function getAgentSkillContent(id: string, name: string): Promise<AgentSkillDetail> {
+  return request<AgentSkillDetail>(
+    `/agents/${encodeURIComponent(id)}/skills/${encodeURIComponent(name)}`
+  );
+}
+
+/** 初始化：幂等创建 4 位个人助理（已存在的不覆盖） */
+export function ensurePersonalAssistants(): Promise<{ created: string[]; skipped: string[] }> {
+  return request<{ created: string[]; skipped: string[] }>("/agents/ensure-personal", {
+    method: "POST",
+  });
+}
+
+/** 从本机文件夹导入技能 */
+export function importAgentSkill(
+  id: string,
+  body: { sourcePath: string; name?: string; target?: "agent" | "shared" }
+): Promise<{ name: string }> {
+  return request<{ name: string }>(`/agents/${encodeURIComponent(id)}/skills/import`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * 上传技能文件夹（multipart）。字段名用各文件的相对路径（`webkitRelativePath`），
+ * 后端据此还原目录树；必须含 `SKILL.md`。
+ */
+export async function uploadAgentSkill(
+  id: string,
+  files: File[],
+  options: { name?: string; target?: "agent" | "shared" } = {}
+): Promise<{ name: string }> {
+  const form = new FormData();
+  for (const file of files) {
+    const rel =
+      (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    form.append(rel, file, file.name);
+  }
+  const params = new URLSearchParams();
+  if (options.name) params.set("name", options.name);
+  if (options.target) params.set("target", options.target);
+  const res = await fetch(
+    `${getBaseUrl()}/agents/${encodeURIComponent(id)}/skills/upload?${params.toString()}`,
+    { method: "POST", body: form }
+  );
+  const body = (await res.json().catch(() => null)) as
+    | { name?: string; message?: string }
+    | null;
+  if (!res.ok) {
+    throw new Error(body?.message ?? `HTTP ${res.status}`);
+  }
+  return { name: body?.name ?? "" };
 }
 
 /* ---------------------------------------------------------------- 记忆 */

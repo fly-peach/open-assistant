@@ -51,7 +51,18 @@ import {
   updateThread,
   updateThreadStatus,
   updateThreadTitle,
+  upsertRecordedTurn,
+  recordTurnToWorkspace,
+  buildReplayContext,
+  compactThread,
+  compactThreadIfNeeded,
+  pruneThreadHistory,
+  readCompaction,
+  resolveCompactionConfig,
+  searchThreadMessages,
 } from "../src/conversation/index.js";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { listWorkspaceSessions } from "../src/conversation/session-list.js";
 
 type Row = Record<string, unknown>;
 
@@ -558,6 +569,291 @@ test("deleteAllConversations 清空会话数据但保留库文件", async () => 
     assert.equal(deleted, 2);
     assert.equal(countOf(openConversationDb(ws), THREADS_TABLE), 0);
     assert.equal(await conversationDbExists(ws), true);
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+// —— 补充：落库（`workspaceMiddleware.afterAgent` 的写入口）——
+
+test("upsertRecordedTurn：同 turnId 重复调用整体替换，不追加（afterAgent 多次触发安全）", async () => {
+  const ws = await makeWorkspace("upsert-turn");
+  try {
+    const t = createThread(ws, { agentId: "life" });
+    upsertRecordedTurn(ws, {
+      threadId: t.id,
+      turnId: "fixed",
+      userContent: "第一版",
+      messages: [{ role: "ai", kind: "text", content: "草稿" }],
+    });
+    upsertRecordedTurn(ws, {
+      threadId: t.id,
+      turnId: "fixed",
+      userContent: "第一版",
+      messages: [
+        { role: "ai", kind: "text", content: "终稿" },
+        { role: "tool", kind: "tool-result", content: "r", toolName: "x", toolCallId: "c1" },
+      ],
+    });
+    const turns = listTurns(ws, t.id);
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]!.status, "done");
+    assert.deepEqual(
+      readThreadMessages(ws, t.id).map((m) => `${m.role}/${m.kind}:${m.content}`),
+      ["human/text:第一版", "ai/text:终稿", "tool/tool-result:r"],
+    );
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("recordTurnToWorkspace：从消息序列切出最后一轮落库（建会话 + 默认标题），幂等替换", async () => {
+  const ws = await makeWorkspace("record-turn-we");
+  try {
+    const threadId = "thread-xyz";
+    recordTurnToWorkspace(ws, {
+      threadId,
+      agentId: "life",
+      messages: [new HumanMessage({ id: "h1", content: "建个待办" }), new AIMessage("好的")],
+    });
+    // 同一轮再次收尾：整体替换，不重复追加
+    recordTurnToWorkspace(ws, {
+      threadId,
+      agentId: "life",
+      messages: [new HumanMessage({ id: "h1", content: "建个待办" }), new AIMessage("已创建")],
+    });
+    const thread = getThread(ws, threadId);
+    assert.ok(thread);
+    assert.equal(thread!.agentId, "life");
+    assert.equal(thread!.title, "建个待办");
+    assert.equal(listTurns(ws, threadId).length, 1);
+    assert.deepEqual(
+      readThreadMessages(ws, threadId).map((m) => `${m.role}:${m.content}`),
+      ["human:建个待办", "ai:已创建"],
+    );
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("recordTurnToWorkspace：没有用户消息 → 不建会话、不落库", async () => {
+  const ws = await makeWorkspace("record-none");
+  try {
+    const wrote = recordTurnToWorkspace(ws, {
+      threadId: "t",
+      agentId: "life",
+      messages: [new AIMessage("只有回答")],
+    });
+    assert.equal(wrote, false);
+    assert.equal(getThread(ws, "t"), null);
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+// —— 补充：热冷合并列表（记录来自会话库，状态来自平台；缺的历史 thread 被导入）——
+
+test("listWorkspaceSessions：会话库记录 + 平台实时状态叠加 + 导入未落库的历史 thread", async () => {
+  const ws = await makeWorkspace("session-list");
+  try {
+    const existing = createThread(ws, { id: "t-existing", agentId: "life", title: "已有" });
+    recordTurn(ws, {
+      threadId: existing.id,
+      userContent: "hi",
+      messages: [{ role: "ai", kind: "text", content: "ho" }],
+    });
+    const platform = [
+      { thread_id: "t-existing", status: "busy", values: { messages: [] } },
+      {
+        thread_id: "t-legacy",
+        status: "idle",
+        values: { messages: [{ type: "human", content: "历史第一条消息" }] },
+      },
+    ];
+    const client = { threads: { search: async () => platform } } as never;
+    const items = await listWorkspaceSessions(ws, { client });
+    const byId = new Map(items.map((item) => [item.id, item]));
+
+    assert.equal(byId.get("t-existing")!.liveStatus, "busy");
+    assert.equal(byId.get("t-existing")!.agentId, "life");
+    assert.equal(byId.get("t-existing")!.turnCount, 1);
+
+    // 历史 thread 被导入会话库，标题取首条用户输入
+    assert.ok(getThread(ws, "t-legacy"));
+    assert.equal(byId.get("t-legacy")!.title, "历史第一条消息");
+    assert.equal(byId.get("t-legacy")!.liveStatus, "idle");
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("listWorkspaceSessions：平台不可用时降级为只列会话库记录（liveStatus=null）", async () => {
+  const ws = await makeWorkspace("session-list-down");
+  try {
+    const t = createThread(ws, { agentId: "life", title: "只有库" });
+    recordTurn(ws, { threadId: t.id, userContent: "x" });
+    const client = {
+      threads: {
+        search: async () => {
+          throw new Error("platform down");
+        },
+      },
+    } as never;
+    const items = await listWorkspaceSessions(ws, { client });
+    assert.equal(items.length, 1);
+    assert.equal(items[0]!.liveStatus, null);
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+// —— 补充：库侧压缩 / 冷会话重放窗口 / 保留期 / 检索 ——
+
+/** 造 n 轮对话（每轮：用户“第 i 轮” + 助手“答 i”） */
+function seedTurns(ws: string, threadId: string, n: number): void {
+  for (let i = 0; i < n; i++) {
+    recordTurn(ws, {
+      threadId,
+      userContent: `第${i}轮`,
+      messages: [{ role: "ai", kind: "text", content: `答${i}` }],
+    });
+  }
+}
+
+test("compactThread：按轮次压缩，保留最近 N 轮，摘要覆盖被移出窗口的轮次", async () => {
+  const ws = await makeWorkspace("compact-basic");
+  try {
+    const t = createThread(ws, { agentId: "life", title: "压缩" });
+    seedTurns(ws, t.id, 5);
+    const record = compactThread(ws, t.id, { keepRecentTurns: 2 });
+    assert.ok(record);
+    assert.equal(record!.compactedTurnCount, 3);
+    assert.equal(record!.keptFromIdx, 3);
+    assert.deepEqual(
+      listTurns(ws, t.id).map((turn) => turn.compactedBy === null),
+      [false, false, false, true, true],
+    );
+    assert.equal(readCompaction(ws, t.id)?.id, record!.id);
+    assert.match(record!.summary, /第0轮/);
+    assert.match(record!.summary, /答0/);
+    assert.match(record!.summary, /第2轮/);
+    assert.doesNotMatch(record!.summary, /第3轮/); // 窗口内的不进摘要
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("compactThreadIfNeeded：未压缩轮次未超阈值不压缩，超过才压缩（可关）", async () => {
+  const ws = await makeWorkspace("compact-threshold");
+  try {
+    const t = createThread(ws, { agentId: "life" });
+    const config = { enabled: true, afterTurns: 5, keepRecentTurns: 2, summaryMaxChars: 4000 };
+    seedTurns(ws, t.id, 3);
+    assert.equal(compactThreadIfNeeded(ws, t.id, config), null);
+    seedTurns(ws, t.id, 3);
+    const record = compactThreadIfNeeded(ws, t.id, config);
+    assert.ok(record); // 未压缩 6 > 5
+    assert.equal(listTurns(ws, t.id).filter((turn) => turn.compactedBy === null).length, 2);
+    // 关闭后不再压缩
+    assert.equal(compactThreadIfNeeded(ws, t.id, { ...config, enabled: false }), null);
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("buildReplayContext：摘要 + 窗口内轮次消息（被压缩的只以摘要存在）", async () => {
+  const ws = await makeWorkspace("compact-replay");
+  try {
+    const t = createThread(ws, { agentId: "life" });
+    seedTurns(ws, t.id, 4);
+    compactThread(ws, t.id, { keepRecentTurns: 2 });
+    const context = buildReplayContext(ws, t.id);
+    assert.ok(context.summary);
+    assert.deepEqual(context.turns.map((turn) => turn.idx), [2, 3]);
+    assert.equal(
+      context.turns[0]!.messages.find((m) => m.role === "human")!.content,
+      "第2轮",
+    );
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("压缩不静默丢失：被压缩轮次的消息仍可检索", async () => {
+  const ws = await makeWorkspace("compact-search");
+  try {
+    const t = createThread(ws, { agentId: "life" });
+    seedTurns(ws, t.id, 4);
+    compactThread(ws, t.id, { keepRecentTurns: 1 });
+    const hits = searchThreadMessages(ws, t.id, "第0轮");
+    assert.ok(hits.length >= 1);
+    assert.equal(hits[0]!.content, "第0轮");
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("pruneThreadHistory：只清超出保留期限的轮次（<=0 不清理）", async () => {
+  const ws = await makeWorkspace("prune-retention");
+  try {
+    const t = createThread(ws, { agentId: "life" });
+    recordTurn(ws, {
+      threadId: t.id,
+      userContent: "old",
+      endedAt: new Date(Date.now() - 10 * 86_400_000).toISOString(),
+    });
+    recordTurn(ws, { threadId: t.id, userContent: "new", endedAt: new Date().toISOString() });
+    assert.equal(pruneThreadHistory(ws, t.id, { retentionDays: 7 }), 1);
+    assert.deepEqual(readThreadMessages(ws, t.id).map((m) => m.content), ["new"]);
+    assert.equal(pruneThreadHistory(ws, t.id, { retentionDays: 0 }), 0);
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("resolveCompactionConfig：阈值可配置，OPEN_ASSISTANT_COMPACT=0 关闭", () => {
+  assert.equal(resolveCompactionConfig({} as NodeJS.ProcessEnv).afterTurns, 20);
+  const config = resolveCompactionConfig({
+    OPEN_ASSISTANT_COMPACT: "0",
+    OPEN_ASSISTANT_COMPACT_AFTER_TURNS: "3",
+    OPEN_ASSISTANT_COMPACT_KEEP_TURNS: "1",
+  } as NodeJS.ProcessEnv);
+  assert.equal(config.enabled, false);
+  assert.equal(config.afterTurns, 3);
+  assert.equal(config.keepRecentTurns, 1);
+});
+
+test("recordTurnToWorkspace：按配置自动压缩（落库路径触发）", async () => {
+  const ws = await makeWorkspace("record-auto-compact");
+  try {
+    const compaction = { enabled: true, afterTurns: 2, keepRecentTurns: 1, summaryMaxChars: 4000 };
+    for (let i = 0; i < 4; i++) {
+      recordTurnToWorkspace(ws, {
+        threadId: "t-auto",
+        agentId: "life",
+        messages: [new HumanMessage({ id: `h${i}`, content: `u${i}` }), new AIMessage(`a${i}`)],
+        compaction,
+      });
+    }
+    assert.ok(readCompaction(ws, "t-auto"));
+    // afterTurns=2：第 3 轮触发一次（保留 1），第 4 轮后又累积到 2（未超阈值）
+    assert.equal(listTurns(ws, "t-auto").filter((turn) => turn.compactedBy === null).length, 2);
+  } finally {
+    await dropWorkspace(ws);
+  }
+});
+
+test("会话名称 CRUD：默认标题 → 改名 → 清空", async () => {
+  const ws = await makeWorkspace("rename-title");
+  try {
+    const t = createThread(ws, { agentId: "life", title: null });
+    recordTurn(ws, { threadId: t.id, userContent: "原始首条输入" });
+    assert.equal(getThread(ws, t.id)!.title, "原始首条输入");
+    updateThreadTitle(ws, t.id, "改过的名字");
+    assert.equal(getThread(ws, t.id)!.title, "改过的名字");
+    // 清空 → 回到 null（列表显示占位标题）
+    updateThreadTitle(ws, t.id, null);
+    assert.equal(getThread(ws, t.id)!.title, null);
   } finally {
     await dropWorkspace(ws);
   }

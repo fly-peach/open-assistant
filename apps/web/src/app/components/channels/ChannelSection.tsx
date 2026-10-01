@@ -121,7 +121,7 @@ function FieldControl({
   );
 }
 
-export function ChannelSection({ agentId }: { agentId: string }) {
+export function ChannelSection({ agentId, bare = false }: { agentId: string; bare?: boolean }) {
   const [list, setList] = useState<{
     configured: ChannelView[];
     available: ChannelView[];
@@ -377,9 +377,16 @@ export function ChannelSection({ agentId }: { agentId: string }) {
   };
 
   return (
-    <section className="rounded-md border border-border bg-card p-4" data-agent-channels>
-      <h2 className="text-base font-semibold">{zh.channels.title}</h2>
-      <p className="mt-1 text-xs text-muted-foreground">{zh.channels.hint}</p>
+    <section
+      className={bare ? "contents" : "rounded-md border border-border bg-card p-4"}
+      data-agent-channels
+    >
+      {!bare && (
+        <>
+          <h2 className="text-base font-semibold">{zh.channels.title}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{zh.channels.hint}</p>
+        </>
+      )}
 
       {error && (
         <p className="mt-2 text-xs text-[var(--color-error)]" data-channels-error>

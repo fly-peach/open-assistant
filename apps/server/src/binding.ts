@@ -165,19 +165,26 @@ async function readOwners(workspaceDir: string): Promise<SessionOwners> {
   return { version: 1, updatedAt: raw.updatedAt ?? new Date().toISOString(), owners: raw.owners };
 }
 
-/** 把某条会话标注为「由 agentId 创建」（幂等，不覆盖已有标注） */
+/**
+ * 把某条会话标注为「由 agentId 创建」（幂等，不覆盖已有标注）。
+ *
+ * 返回**实际生效**的归属：已有标注时返回旧值（换绑后保留「创建时是谁」），
+ * 否则返回本次写入的 agentId。调用方据此把历史归属一并写进平台 thread metadata。
+ */
 export async function stampSessionOwner(
   workspaceDir: string,
   threadId: string,
   agentId: string,
-): Promise<void> {
-  if (!threadId || !agentId) return;
+): Promise<string> {
+  if (!threadId || !agentId) return agentId;
   const data = await readOwners(workspaceDir);
-  if (data.owners[threadId]) return;
+  const existing = data.owners[threadId];
+  if (existing) return existing;
   data.owners[threadId] = agentId;
   data.updatedAt = new Date().toISOString();
   await ensureAppDataDir(workspaceDir);
   await writeJsonAtomic(ownersPath(workspaceDir), data);
+  return agentId;
 }
 
 /** 读取会话归属标注（测试 / 前端标注用） */

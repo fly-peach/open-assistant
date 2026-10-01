@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, BookOpen, Loader2, Save, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Expander } from "@/components/ui/expander";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,6 +34,7 @@ import { groupModelsByProvider } from "@/app/components/models/ModelPicker";
 import { VisionBadge } from "@/app/components/models/VisionBadge";
 import { ChannelSection } from "@/app/components/channels/ChannelSection";
 import { AgentWorkspaceSection } from "@/app/components/agents/AgentWorkspaceSection";
+import { AgentSkillsSection } from "@/app/components/agents/AgentSkillsSection";
 import {
   APPROVAL_LEVELS,
   approvalOptions,
@@ -196,9 +198,7 @@ export default function AgentConfigPage() {
 
       {data && (
         <div className="mt-4 grid gap-4">
-          <section className="rounded-md border border-border bg-card p-4">
-            <h2 className="text-base font-semibold">{zh.agents.personaTitle}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{zh.agents.personaHint}</p>
+          <Expander title={zh.agents.personaTitle} subtitle={zh.agents.personaHint} defaultOpen>
             {!persona && (
               <p
                 className="mt-2 text-xs text-[var(--color-warning)]"
@@ -216,11 +216,9 @@ export default function AgentConfigPage() {
               value={persona}
               onChange={(event) => setPersona(event.target.value)}
             />
-          </section>
+          </Expander>
 
-          <section className="rounded-md border border-border bg-card p-4">
-            <h2 className="text-base font-semibold">{zh.agents.configTitle}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{zh.agents.configHint}</p>
+          <Expander title={zh.agents.configTitle} subtitle={zh.agents.configHint} defaultOpen>
 
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
@@ -348,50 +346,32 @@ export default function AgentConfigPage() {
                 </p>
               </div>
             </div>
-
-            <div className="mt-4 flex items-center gap-2">
-              <Button
-                size="sm"
-                onClick={() => void onSave()}
-                disabled={saving}
-                data-agent-save
-              >
-                {saving ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
-                {saving ? zh.agents.saving : zh.agents.save}
-              </Button>
-            </div>
-          </section>
+          </Expander>
 
           {/* 工作区归属（1:1）：一个 agent 维护一个本机目录，所以配置跟人设/模型同页 */}
-          <AgentWorkspaceSection agentId={data.id} />
+          <Expander title={zh.agentWorkspace.title} subtitle={zh.agentWorkspace.hint}>
+            <AgentWorkspaceSection agentId={data.id} bare />
+          </Expander>
 
           {/* 频道（design D13）：频道归属 agent 定义，所以配置放在这一页而不是工作区页 */}
-          <ChannelSection agentId={data.id} />
+          <Expander title={zh.channels.title} subtitle={zh.channels.hint}>
+            <ChannelSection agentId={data.id} bare />
+          </Expander>
 
-          <section className="rounded-md border border-border bg-card p-4" data-agent-skills>
-            <h2 className="text-base font-semibold">{zh.agents.skillsTitle}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{zh.agents.skillsHint}</p>
-            {data.skills.length === 0 ? (
-              <p className="mt-2 text-xs text-muted-foreground">{zh.agents.skillsEmpty}</p>
-            ) : (
-              <ul className="mt-2 grid gap-1.5">
-                {data.skills.map((skill) => (
-                  <li
-                    key={skill.name}
-                    data-agent-skill={skill.name}
-                    className="text-xs"
-                  >
-                    <span className="font-medium">{skill.name}</span>
-                    <span className="ml-2 text-muted-foreground">{skill.description}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <Expander
+            title={zh.agents.skillsTitle}
+            subtitle={zh.agents.skillsHint}
+            data-agent-skills-expander
+          >
+            <AgentSkillsSection
+              agentId={data.id}
+              skills={data.skills}
+              onChanged={() => void mutate()}
+              bare
+            />
+          </Expander>
 
-          <section className="rounded-md border border-border bg-card p-4">
-            <h2 className="text-base font-semibold">{zh.agents.memoryTitle}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{zh.agents.memoryHint}</p>
+          <Expander title={zh.agents.memoryTitle} subtitle={zh.agents.memoryHint}>
             <pre
               className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 text-xs"
               data-agent-memory-preview
@@ -407,7 +387,15 @@ export default function AgentConfigPage() {
               <BookOpen size={13} />
               {zh.agents.openMemory}
             </Link>
-          </section>
+          </Expander>
+
+          {/* 保存按钮放在各区块之外：展开 / 收起任何一个块都不影响提交 */}
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => void onSave()} disabled={saving} data-agent-save>
+              {saving ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+              {saving ? zh.agents.saving : zh.agents.save}
+            </Button>
+          </div>
         </div>
       )}
     </div>

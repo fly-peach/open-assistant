@@ -34,6 +34,7 @@ import {
   agentDirPath,
   ensureAgentsRoot,
   getAgentsRoot,
+  sharedSkillsDirPath,
 } from "./root.js";
 import { readJsonOrNull, statOrNull, writeJsonAtomic } from "./json-file.js";
 import {
@@ -47,7 +48,13 @@ import {
   readMemoryForPrompt,
   writeCoreMemory,
 } from "./memory.js";
-import { type AgentSkillMeta, listAgentSkills } from "./skills.js";
+import {
+  type AgentSkillMeta,
+  isValidSkillName,
+  listEffectiveSkills,
+  readSkillMetaFromDir,
+} from "./skills.js";
+import { ensureBaseSkills, renderSkillFile } from "./base-skills.js";
 import { DEFAULT_AGENT_PERSONA, readPersonaFile } from "../persona.js";
 import { DEFAULT_AGENT_HEARTBEAT } from "./heartbeat-default.js";
 
@@ -173,7 +180,7 @@ async function readDefinition(id: string, dir: string): Promise<AgentDefinition>
   const persona = (await readPersonaFile(dir, AGENT_PERSONA_FILE)) ?? "";
   // 注入上下文用的是**带上限的核心记忆**（task 11.3），不是全文
   const memory = (await readMemoryForPrompt(dir)).content;
-  const skills = await listAgentSkills(dir);
+  const skills = await listEffectiveSkills(dir, { disabled: config.disabledSkills });
   return {
     id,
     name: config.name,
@@ -213,6 +220,8 @@ export async function createAgent(input: CreateAgentInput): Promise<string> {
   const config = defaultAgentConfig({ id, name: input.name, description: input.description });
   await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), config);
   await ensureMemoryLayout(dir);
+  // 新 agent 继承共享池的技能：确保基础技能已播种
+  await ensureBaseSkills(root);
   invalidateAgentRuntime(id);
   return id;
 }
@@ -227,6 +236,8 @@ export interface AgentListResult {
 /** 列出根目录下的全部 agent（跳过共享技能池 `_shared`），并标注异常项而非整体失败 */
 export async function listAgents(): Promise<AgentListResult> {
   const root = await ensureAgentsRoot();
+  // 初始化：把基础技能播种到共享池（幂等，已存在不覆盖）
+  await ensureBaseSkills(root);
   let entries = await fs.readdir(root, { withFileTypes: true });
   let dirs = entries.filter((e) => e.isDirectory() && e.name !== SHARED_SKILLS_DIR);
   if (dirs.length === 0) {
@@ -387,6 +398,234 @@ export async function updateAgent(agentId: string, patch: UpdateAgentInput): Pro
 
   invalidateAgentRuntime(agentId);
   return agentId;
+}
+
+// —— 技能（私有技能的增删 + 启用/关闭；共享技能只可开关，见 design D8）——
+
+export interface CreateAgentSkillInput {
+  name: unknown;
+  description?: unknown;
+  content?: unknown;
+}
+
+/** 新增一个 agent **私有**技能（写入 `<agent>/skills/<name>/SKILL.md`） */
+export async function createAgentSkill(
+  agentId: string,
+  input: CreateAgentSkillInput,
+): Promise<string> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  const rawName = typeof input.name === "string" ? input.name.trim() : "";
+  if (!isValidSkillName(rawName)) {
+    throw new AgentError(
+      "AGENT_INVALID_SKILL",
+      "技能名只能是字母/数字/._- 组成、以字母或数字开头（会成为目录名）",
+      400,
+      "name",
+    );
+  }
+  const skillDir = path.join(dir, AGENT_SKILLS_DIR, rawName);
+  if (await statOrNull(skillDir)) {
+    throw new AgentError("AGENT_SKILL_EXISTS", `技能已存在：${rawName}`, 409, "name");
+  }
+  const description = typeof input.description === "string" ? input.description.trim() : "";
+  const content = typeof input.content === "string" ? input.content : "";
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    renderSkillFile(rawName, description, content),
+    "utf8",
+  );
+  invalidateAgentRuntime(agentId);
+  return rawName;
+}
+
+export interface ImportAgentSkillInput {
+  /** 本机源目录绝对路径（必须是含 SKILL.md 的技能目录） */
+  sourcePath: unknown;
+  /** 导入后的技能名；缺省取 SKILL.md 的 frontmatter name，再退到源目录名 */
+  name?: unknown;
+  /** 导入到哪：`agent`（私有，默认）或 `shared`（共享池，所有 agent 继承） */
+  target?: unknown;
+}
+
+/**
+ * 把本机一个技能目录**整份导入**（复制 SKILL.md 与附带的脚本 / 参考资料）。
+ * 不覆盖同名技能。
+ */
+export async function importAgentSkill(
+  agentId: string,
+  input: ImportAgentSkillInput,
+): Promise<string> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  const sourcePath = typeof input.sourcePath === "string" ? input.sourcePath.trim() : "";
+  if (sourcePath.length === 0 || !path.isAbsolute(sourcePath)) {
+    throw new AgentError("AGENT_INVALID_SKILL", "sourcePath 必须是本机绝对路径", 400, "sourcePath");
+  }
+  const st = await statOrNull(sourcePath);
+  if (!st?.isDirectory()) {
+    throw new AgentError("AGENT_SKILL_NOT_FOUND", `源目录不存在：${sourcePath}`, 404, "sourcePath");
+  }
+  const meta = await readSkillMetaFromDir(sourcePath);
+  if (!meta) {
+    throw new AgentError(
+      "AGENT_INVALID_SKILL",
+      "源目录里没有可解析的 SKILL.md，不是技能目录",
+      400,
+      "sourcePath",
+    );
+  }
+  const explicit = typeof input.name === "string" ? input.name.trim() : "";
+  const rawName = explicit.length > 0 ? explicit : meta.name || path.basename(sourcePath);
+  if (!isValidSkillName(rawName)) {
+    throw new AgentError(
+      "AGENT_INVALID_SKILL",
+      "技能名只能是字母/数字/._- 组成、以字母或数字开头",
+      400,
+      "name",
+    );
+  }
+  const target = input.target === "shared" ? "shared" : "agent";
+  const destDir =
+    target === "shared"
+      ? path.join(sharedSkillsDirPath(), rawName)
+      : path.join(dir, AGENT_SKILLS_DIR, rawName);
+  if (await statOrNull(destDir)) {
+    throw new AgentError("AGENT_SKILL_EXISTS", `技能已存在：${rawName}`, 409, "name");
+  }
+  if (path.resolve(sourcePath) === path.resolve(destDir)) {
+    throw new AgentError("AGENT_INVALID_SKILL", "源目录与目标目录相同", 400, "sourcePath");
+  }
+  await fs.mkdir(path.dirname(destDir), { recursive: true });
+  await fs.cp(sourcePath, destDir, { recursive: true });
+  invalidateAgentRuntime(agentId);
+  return rawName;
+}
+
+export interface UploadedSkillFile {
+  /** 浏览器给的相对路径（`webkitRelativePath` 或文件名） */
+  path: string;
+  data: Uint8Array;
+}
+
+/**
+ * 上传一个技能文件夹：把相对路径还原成目录树，写进 `<agent>/skills/<name>/`（或共享池）。
+ * 顶层必须是单个文件夹且内含 `SKILL.md`；路径会做安全校验（拒绝 `..` / 绝对路径越界）。
+ */
+export async function uploadAgentSkill(
+  agentId: string,
+  input: { files: UploadedSkillFile[]; name?: unknown; target?: unknown },
+): Promise<string> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  const files = input.files ?? [];
+  if (files.length === 0) {
+    throw new AgentError("AGENT_INVALID_SKILL", "没有上传任何文件", 400, "files");
+  }
+
+  const normalized = files.map((file) => {
+    const rel = String(file.path).replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+    const segments = rel.split("/");
+    if (segments.some((seg) => seg === ".." || seg === "")) {
+      throw new AgentError("AGENT_INVALID_SKILL", `上传路径非法：${file.path}`, 400, "files");
+    }
+    return { rel, segments, data: file.data };
+  });
+
+  // 顶层文件夹名（取第一个有多段路径的条目）；所有条目必须共享它，否则当作平铺
+  const root =
+    normalized.find((f) => f.segments.length > 1)?.segments[0] ?? undefined;
+  const shareRoot = root !== undefined && normalized.every((f) => f.segments[0] === root);
+  const inner = normalized.map((f) => ({
+    rel: shareRoot ? f.segments.slice(1).join("/") : f.rel,
+    data: f.data,
+  }));
+  if (!inner.some((f) => f.rel === "SKILL.md")) {
+    throw new AgentError("AGENT_INVALID_SKILL", "上传的文件夹里没有 SKILL.md", 400, "files");
+  }
+
+  const explicit = typeof input.name === "string" ? input.name.trim() : "";
+  const rawName = explicit.length > 0 ? explicit : root ?? "";
+  if (!isValidSkillName(rawName)) {
+    throw new AgentError(
+      "AGENT_INVALID_SKILL",
+      "技能名非法：请指定 name，或保证文件夹名由字母/数字/._- 组成",
+      400,
+      "name",
+    );
+  }
+  const target = input.target === "shared" ? "shared" : "agent";
+  const destDir =
+    target === "shared"
+      ? path.join(sharedSkillsDirPath(), rawName)
+      : path.join(dir, AGENT_SKILLS_DIR, rawName);
+  if (await statOrNull(destDir)) {
+    throw new AgentError("AGENT_SKILL_EXISTS", `技能已存在：${rawName}`, 409, "name");
+  }
+
+  const destPrefix = path.resolve(destDir) + path.sep;
+  for (const file of inner) {
+    const target2 = path.resolve(path.join(destDir, file.rel));
+    if (!target2.startsWith(destPrefix)) {
+      throw new AgentError("AGENT_INVALID_SKILL", `上传路径越界：${file.rel}`, 400, "files");
+    }
+    await fs.mkdir(path.dirname(target2), { recursive: true });
+    await fs.writeFile(target2, file.data);
+  }
+  invalidateAgentRuntime(agentId);
+  return rawName;
+}
+
+/** 删除一个 agent **私有**技能（共享技能不能删，只能关） */
+export async function deleteAgentSkill(agentId: string, name: string): Promise<void> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  if (!isValidSkillName(name)) {
+    throw new AgentError("AGENT_INVALID_SKILL", `技能名非法：${name}`, 400, "name");
+  }
+  const skillDir = path.join(dir, AGENT_SKILLS_DIR, name);
+  if (!(await statOrNull(skillDir))) {
+    throw new AgentError("AGENT_SKILL_NOT_FOUND", `找不到 agent 私有技能：${name}`, 404, "name");
+  }
+  await fs.rm(skillDir, { recursive: true, force: true });
+  invalidateAgentRuntime(agentId);
+}
+
+/** 启用 / 关闭某个技能（写 config.disabledSkills；共享与私有都适用） */
+export async function setAgentSkillEnabled(
+  agentId: string,
+  name: string,
+  enabled: boolean,
+): Promise<AgentConfig> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  if (!isValidSkillName(name)) {
+    throw new AgentError("AGENT_INVALID_SKILL", `技能名非法：${name}`, 400, "name");
+  }
+  const current = await readAgentConfig(agentId, dir);
+  const disabled = new Set(current.disabledSkills);
+  if (enabled) disabled.delete(name);
+  else disabled.add(name);
+  const config: AgentConfig = { ...current, disabledSkills: [...disabled].sort() };
+  await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), config);
+  invalidateAgentRuntime(agentId);
+  return config;
 }
 
 /** 删除 agent 定义（整目录删除） */
@@ -627,7 +866,7 @@ export async function resolveAgentRuntime(agentId: string): Promise<AgentRuntime
   const persona = await readPersonaFile(dir, AGENT_PERSONA_FILE);
   // 运行实例里带**核心记忆**（供注入）；细节走 memory_search / memory_read
   const memory = await readCoreMemory(dir);
-  const skills = await listAgentSkills(dir);
+  const skills = await listEffectiveSkills(dir, { disabled: config.disabledSkills });
   const runtime: AgentRuntime = {
     id: agentId,
     dir,

@@ -23,6 +23,7 @@ import { SystemMessage } from "@langchain/core/messages";
 import { PERSONA_FILE } from "./workspace.js";
 import { PERSONA_CONTENT } from "./workspace-materials.js";
 import { AGENT_PERSONA_FILE } from "./agents/root.js";
+import type { AgentSkillMeta } from "./agents/skills.js";
 
 /** 人设文件读取上限：超过时截断（人设不该是大部头，避免把上下文吃光） */
 export const PERSONA_MAX_BYTES = 32 * 1024;
@@ -121,6 +122,30 @@ export function withAgentMemory(systemMessage: SystemMessage, memory: string): S
     "",
     memory.trim(),
     "</agent_memory>",
+  ].join("\n");
+  return appendTextBlock(systemMessage, section);
+}
+
+/**
+ * 把 agent 可用技能作为 `<agent_skills>` 段落追加到系统消息末尾。
+ *
+ * **渐进披露**（design D8）：这里只放**名称 + 用途**（每条一行，每轮固定成本），
+ * 技能正文按需用 `skill_read` 读取 —— 技能再多也不会把上下文撑爆。
+ * 已关闭的技能不注入。
+ */
+export function withAgentSkills(
+  systemMessage: SystemMessage,
+  skills: readonly AgentSkillMeta[],
+): SystemMessage {
+  const enabled = skills.filter((skill) => !skill.disabled);
+  if (enabled.length === 0) return systemMessage;
+  const section = [
+    "<agent_skills>",
+    "以下是我可用的技能（只给了名称与用途）。当某个技能可能相关时，先用 skill_list 确认，",
+    "再用 skill_read 读取它的完整说明并照做；不要凭名字猜技能内容。",
+    "",
+    ...enabled.map((skill) => `- ${skill.name}: ${skill.description || "（无描述）"}`),
+    "</agent_skills>",
   ].join("\n");
   return appendTextBlock(systemMessage, section);
 }

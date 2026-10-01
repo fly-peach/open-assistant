@@ -18,7 +18,14 @@ import { openWorkspace } from "@/lib/workspaceApi";
 import { getAgentProfiles, setAgentWorkspaceDir } from "@/lib/agentProfilesApi";
 import zh from "@/i18n/zh";
 
-export function AgentWorkspaceSection({ agentId }: { agentId: string }) {
+export function AgentWorkspaceSection({
+  agentId,
+  bare = false,
+}: {
+  agentId: string;
+  /** 由外层 Expander 提供标题与外框时置 true（不再渲染自己的卡片头） */
+  bare?: boolean;
+}) {
   const [workspaceDir, setWorkspaceDir] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,9 +80,16 @@ export function AgentWorkspaceSection({ agentId }: { agentId: string }) {
   }, [agentId, reload]);
 
   return (
-    <section className="rounded-md border border-border bg-card p-4" data-agent-workspace>
-      <h2 className="text-base font-semibold">{zh.agentWorkspace.title}</h2>
-      <p className="mt-1 text-xs text-muted-foreground">{zh.agentWorkspace.hint}</p>
+    <section
+      className={bare ? "contents" : "rounded-md border border-border bg-card p-4"}
+      data-agent-workspace
+    >
+      {!bare && (
+        <>
+          <h2 className="text-base font-semibold">{zh.agentWorkspace.title}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{zh.agentWorkspace.hint}</p>
+        </>
+      )}
 
       <div className="mt-3 rounded border border-border-light p-3" data-agent-workspace-value>
         {!loaded ? (

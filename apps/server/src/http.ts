@@ -4,6 +4,7 @@
  * 工作区一律以「绝对路径」传参（不再有 :id）：
  * - GET  /fs/list                          无 path → 列本机磁盘 / 根
  * - GET  /fs/list?path=<abs>               列出该目录下的子目录（只列目录）
+ * - POST /fs/pick-folder                   弹后端主机的系统文件夹对话框 → { path, cancelled, error? }
  * - POST /workspace                        body { path, create? } → { path }（realpath 归一化，不写任何文件）
  * - GET  /workspace/status?path=<ws>       初始化状态（两件套各自是否存在）
  * - POST /workspace/init                   body { path } → { path, created, skipped }（幂等、不覆盖）
@@ -13,18 +14,33 @@
  * - PUT  /workspace/todos?path=<ws>        原子写入 todos.json（乐观并发，冲突 409）
  * - GET  /agents                           列出 agents 根下的全部定义（含异常标注）
  * - POST /agents                           body { id, name?, description? } → { id }
+ * - GET  /agents/contactable?path=<ws>      本工作区的 agent 能联系哪些对端（受 contactableAgents 约束）
+ * - POST /agents/{id}/ask                  body { path, text, sessionId? } → 跨工作区调用（对端在自己工作区跑一轮）
  * - GET  /agents/{id}                      单个 agent 定义（含 config / persona / memory / skills）
  * - PATCH /agents/{id}                     body { name?, description?, config?, persona?, memory? } → { id }
  * - DELETE /agents/{id}                    → { ok: true }
  * - GET  /agents/{id}/memory               → { content }
  * - PUT  /agents/{id}/memory               body { content } → { ok: true }
- * - GET  /agents/{id}/skills               → { skills: [{ name, description }] }
+ * - GET  /agents/{id}/skills            → { skills: [{ name, description, source, disabled }] }（共享池 + 私有，同名私有优先）
+ * - POST /agents/{id}/skills             body { name, description?, content? } → { name }（新增私有技能）
+ * - POST /agents/{id}/skills/import      body { sourcePath, name?, target? } → { name }（从本机文件夹导入）
+ * - POST /agents/{id}/skills/upload      multipart（字段名=相对路径）→ { name }（上传技能文件夹）
+ * - GET  /agents/{id}/skills/{name}      → { name, description, source, disabled, content }（SKILL.md 正文）
+ * - PUT  /agents/{id}/skills/{name}      body { enabled } → { name, enabled, disabledSkills }（启用/关闭）
+ * - DELETE /agents/{id}/skills/{name}    → { ok: true }（仅私有技能）
  * - GET  /agents/{id}/team                 → 子 agent 团队视图 { agentId, dir, teamDir, exists, toolCatalog, members }
  * - POST /agents/{id}/team                 body { name, description, systemPrompt? } → { name }
  * - GET  /agents/{id}/team/{name}          → { member }
  * - PUT  /agents/{id}/team/{name}          body { description?, tools?, model?, skills?, mode?, systemPrompt? } → { name, member }
  * - GET  /workspace/binding?path=<ws>      工作区绑定视图（未绑定 → agentId: null）
  * - PUT  /workspace/binding                body { path, agentId, mode: "keep"|"archive" } → { agentId }
+ * - GET  /workspace/sessions?path=<ws>     会话列表（工作区会话库，含非活跃）
+ * - GET  /workspace/sessions/{id}?path=<ws> 单条会话（会话行 + 轮次 + 消息）
+ * - PATCH /workspace/sessions/{id}?path=<ws> body { title } 重命名会话（null / 空串 = 清空）
+ * - DELETE /workspace/sessions/{id}?path=<ws> 删除会话（默认连带子会话）
+ * - GET  /workspace/sessions/{id}/replay?path=<ws>[&keepRecentTurns=N] 冷会话重放窗口（摘要 + 最近轮次）
+ * - POST /workspace/sessions/{id}/compact?path=<ws>[&keepRecentTurns=N]  手动压缩
+ * - GET  /workspace/sessions/{id}/search?path=<ws>&q=<kw> 会话内检索（含被压缩内容）
  * - GET  /memory/project?path=<ws>         项目记忆（返回 wiki/index.md 内容）
  * - PUT  /memory/project                   写 index.md 的「项目记忆」分区
  * - GET  /wiki/schema?path=<ws>            SCHEMA.md 解析结果（实体类型 / 目录约定 / 字段）
@@ -67,7 +83,9 @@ import {
 } from "./workspace.js";
 import { TodoStoreError, readTodos, writeTodos, type TodoFile } from "./todos.js";
 import { runWorkspaceMigrationOnce } from "./sessions.js";
+import { nativePickerCommand, pickNativeFolder } from "./native-picker.js";
 import { AgentError } from "./agents/errors.js";
+import { ConversationStoreError } from "./conversation/types.js";
 import { ModelError } from "./models/errors.js";
 import {
   addProviderModels,
@@ -85,14 +103,22 @@ import {
 } from "./models/index.js";
 import {
   createAgent,
+  createAgentSkill,
   deleteAgent,
+  deleteAgentSkill,
+  importAgentSkill,
   listAgents,
   readAgent,
   setAgentEnabled,
   setAgentPinned,
+  setAgentSkillEnabled,
   setAgentWorkspaceDir,
   updateAgent,
+  uploadAgentSkill,
 } from "./agents/registry.js";
+import { readSkillContent } from "./agents/skills.js";
+import { ensurePersonalAssistants } from "./agents/personal-assistants.js";
+import { askAgent, listContactableAgents } from "./agents/comms.js";
 import {
   listMemoryTree,
   readCoreMemory,
@@ -141,7 +167,8 @@ const log = (msg: string) => console.log(msg);
 
 export const app = new Hono();
 
-// 只在工作区路由上做一次性的历史会话迁移，避免影响 langgraph 自身路由。
+// 只在工作区路由上做一次性的「历史会话归属回填」（workspace / agent_id），
+// 避免影响 langgraph 自身路由。
 // 测试环境可用 OPEN_ASSISTANT_DISABLE_MIGRATION=1 关闭，避免误连真实 server。
 const migrationMiddleware = async (_c: unknown, next: () => Promise<void>) => {
   if (process.env.OPEN_ASSISTANT_DISABLE_MIGRATION !== "1") {
@@ -177,6 +204,10 @@ app.onError((err, c) => {
       err.status as 400,
     );
   }
+  if (err instanceof ConversationStoreError) {
+    const status = err.code === "CONVERSATION_THREAD_NOT_FOUND" ? 404 : 400;
+    return c.json({ error: err.code, message: err.message }, status);
+  }
   console.error("[http] unhandled error:", err);
   return c.json({ error: "INTERNAL", message: (err as Error).message }, 500);
 });
@@ -190,6 +221,18 @@ function requireWorkspaceQuery(raw: string | undefined): string {
 }
 
 // —— 本机目录浏览 ——
+
+/** 在后端所在机器上弹系统「选择文件夹」对话框，返回选中的绝对路径 */
+app.post("/fs/pick-folder", async (c) => {
+  // 诊断用：只看会跑什么命令，不真的弹框（避免在无人值守环境里挂住）
+  if (c.req.query("probe") === "1") {
+    return c.json({
+      platform: process.platform,
+      command: nativePickerCommand(process.platform),
+    });
+  }
+  return c.json(await pickNativeFolder());
+});
 
 app.get("/fs/list", async (c) => {
   const raw = c.req.query("path");
@@ -291,6 +334,12 @@ app.post("/agents", async (c) => {
     description: typeof body.description === "string" ? body.description : undefined,
   });
   return c.json({ id });
+});
+
+/** 当前工作区绑定的 agent 能联系哪些对端（受 contactableAgents 约束） */
+app.get("/agents/contactable", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  return c.json(await listContactableAgents(workspace));
 });
 
 app.get("/agents/:id", async (c) => {
@@ -406,7 +455,117 @@ app.delete("/agents/:id/channels/:key", async (c) => {
 
 app.get("/agents/:id/skills", async (c) => {
   const def = await readAgent(c.req.param("id"));
-  return c.json({ skills: def.skills.map((s) => ({ name: s.name, description: s.description })) });
+  return c.json({
+    skills: def.skills.map((s) => ({
+      name: s.name,
+      description: s.description,
+      source: s.source,
+      disabled: s.disabled,
+      overridesShared: s.overridesShared,
+    })),
+  });
+});
+
+/** 新增 agent **私有**技能（共享池里的技能是继承来的，只可开关不可删） */
+app.post("/agents/:id/skills", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    name: unknown;
+    description?: unknown;
+    content?: unknown;
+  };
+  const name = await createAgentSkill(c.req.param("id"), body);
+  return c.json({ name });
+});
+
+/** 从本机文件夹导入技能（整份复制 SKILL.md 与附带资源） */
+app.post("/agents/:id/skills/import", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    sourcePath: unknown;
+    name?: unknown;
+    target?: unknown;
+  };
+  const name = await importAgentSkill(c.req.param("id"), body);
+  return c.json({ name });
+});
+
+/** 跨工作区调用：让对端 agent 在它自己的工作区里跑一轮，返回答复 */
+app.post("/agents/:id/ask", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    path?: unknown;
+    text?: unknown;
+    sessionId?: unknown;
+    callerThreadId?: unknown;
+  };
+  if (typeof body.path !== "string" || body.path.trim().length === 0) {
+    return c.json({ error: "WORKSPACE_INVALID_PATH", message: "请求体必须包含 path（发起方工作区绝对路径）" }, 400);
+  }
+  if (typeof body.text !== "string" || body.text.trim().length === 0) {
+    return c.json({ error: "AGENT_INVALID_CONFIG", message: "请求体必须包含 text" }, 400);
+  }
+  const callerWorkspaceDir = await resolveWorkspaceDir(body.path);
+  const result = await askAgent({
+    callerWorkspaceDir,
+    toAgentId: c.req.param("id"),
+    text: body.text,
+    ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}),
+    ...(typeof body.callerThreadId === "string" ? { callerThreadId: body.callerThreadId } : {}),
+  });
+  return c.json(result);
+});
+
+/** 上传技能文件夹（multipart：字段名 = 相对路径；需要含 SKILL.md） */
+app.post("/agents/:id/skills/upload", async (c) => {
+  const form = await c.req.formData();
+  const files: Array<{ path: string; data: Uint8Array }> = [];
+  for (const [field, value] of form.entries()) {
+    if (typeof value === "string") continue;
+    files.push({ path: field, data: new Uint8Array(await value.arrayBuffer()) });
+  }
+  const name = await uploadAgentSkill(c.req.param("id"), {
+    files,
+    name: c.req.query("name"),
+    target: c.req.query("target"),
+  });
+  return c.json({ name });
+});
+
+/** 读取单个技能的 SKILL.md 正文（点开看详情用） */
+app.get("/agents/:id/skills/:name", async (c) => {
+  const def = await readAgent(c.req.param("id"));
+  const skill = def.skills.find((s) => s.name === c.req.param("name"));
+  if (!skill) {
+    return c.json({ error: "AGENT_SKILL_NOT_FOUND", message: `找不到技能：${c.req.param("name")}` }, 404);
+  }
+  const content = await readSkillContent(skill.dir);
+  return c.json({
+    name: skill.name,
+    description: skill.description,
+    source: skill.source,
+    disabled: skill.disabled,
+    overridesShared: skill.overridesShared,
+    content: content ?? "",
+  });
+});
+
+/** 启用 / 关闭某个技能（共享与私有都适用；只影响该 agent） */
+app.put("/agents/:id/skills/:name", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown };
+  if (typeof body.enabled !== "boolean") {
+    return c.json({ error: "AGENT_INVALID_CONFIG", message: "enabled 必须是布尔值" }, 400);
+  }
+  const config = await setAgentSkillEnabled(c.req.param("id"), c.req.param("name"), body.enabled);
+  return c.json({ name: c.req.param("name"), enabled: body.enabled, disabledSkills: config.disabledSkills });
+});
+
+/** 删除 agent 私有技能 */
+app.delete("/agents/:id/skills/:name", async (c) => {
+  await deleteAgentSkill(c.req.param("id"), c.req.param("name"));
+  return c.json({ ok: true });
+});
+
+/** 初始化：幂等创建 4 位个人助理（已存在的目录不动，不覆盖用户改动） */
+app.post("/agents/ensure-personal", async (c) => {
+  return c.json(await ensurePersonalAssistants());
 });
 
 // —— 子 agent 团队（specs/subagent-team）——
@@ -470,6 +629,114 @@ app.put("/workspace/binding", async (c) => {
   const mode = body.mode === "archive" ? "archive" : "keep";
   const result = await writeBinding(body.path, body.agentId, { mode, reason: "user" });
   return c.json({ agentId: result.binding.agentId });
+});
+
+// —— 会话库（会话内容的工作区事实源：`<工作区>/.open-assistant/sessions.sqlite`）——
+//
+// 内容由 `workspaceMiddleware.afterAgent` 在一轮结束时落库（见 conversation/recording.ts）。
+// 这里只读 / 删：列表给会话列表用，详情给冷会话重建用。
+// 动态 import：不碰 SQLite 的调用方（如纯 JSON 单测）不必加载 `node:sqlite`。
+
+/** 解析带上下限的整数查询参数（非法 / 越界一律取默认或夹紧） */
+function intQuery(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+/** 列出某工作区的会话（会话库记录 + 平台实时状态叠加；缺的历史 thread 会被导入） */
+app.get("/workspace/sessions", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const limit = intQuery(c.req.query("limit"), 50, 1, 200);
+  const offset = intQuery(c.req.query("offset"), 0, 0, 100_000);
+  const { listWorkspaceSessions } = await import("./conversation/session-list.js");
+  return c.json({ sessions: await listWorkspaceSessions(workspace, { limit, offset }) });
+});
+
+/** 单条会话：会话行 + 轮次 + 消息（冷会话据此重建） */
+app.get("/workspace/sessions/:id", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const id = c.req.param("id");
+  const { getThread, listTurns, readThreadMessages } = await import("./conversation/index.js");
+  const thread = getThread(workspace, id);
+  if (!thread) {
+    return c.json({ error: "SESSION_NOT_FOUND", message: `找不到会话: ${id}` }, 404);
+  }
+  return c.json({
+    thread,
+    turns: listTurns(workspace, id),
+    messages: readThreadMessages(workspace, id),
+  });
+});
+
+/** 删除会话（默认连带子会话；子会话处置见 store.deleteThread） */
+app.delete("/workspace/sessions/:id", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const id = c.req.param("id");
+  const { deleteThread, getThread } = await import("./conversation/index.js");
+  if (!getThread(workspace, id)) {
+    return c.json({ error: "SESSION_NOT_FOUND", message: `找不到会话: ${id}` }, 404);
+  }
+  return c.json(deleteThread(workspace, id));
+});
+
+/** 重命名会话（body `{ title }`；null / 空串 = 清空，回到默认标题） */
+app.patch("/workspace/sessions/:id", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const id = c.req.param("id");
+  const body = (await c.req.json().catch(() => ({}))) as { title?: unknown };
+  if (body.title !== null && body.title !== undefined && typeof body.title !== "string") {
+    return c.json({ error: "SESSION_INVALID_TITLE", message: "title 必须是字符串或 null" }, 400);
+  }
+  const { getThread, updateThreadTitle } = await import("./conversation/index.js");
+  if (!getThread(workspace, id)) {
+    return c.json({ error: "SESSION_NOT_FOUND", message: `找不到会话: ${id}` }, 404);
+  }
+  const trimmed = typeof body.title === "string" ? body.title.trim() : null;
+  const updated = updateThreadTitle(workspace, id, trimmed && trimmed.length > 0 ? trimmed : null);
+  return c.json({ thread: updated });
+});
+
+/** 冷会话重放窗口：摘要 + 窗口内轮次消息（重开冷会话时用它起一条新线程） */
+app.get("/workspace/sessions/:id/replay", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const id = c.req.param("id");
+  const { buildReplayContext, getThread } = await import("./conversation/index.js");
+  if (!getThread(workspace, id)) {
+    return c.json({ error: "SESSION_NOT_FOUND", message: `找不到会话: ${id}` }, 404);
+  }
+  const keep = c.req.query("keepRecentTurns");
+  const context = buildReplayContext(
+    workspace,
+    id,
+    keep === undefined ? {} : { keepRecentTurns: intQuery(keep, 0, 0, 1000) },
+  );
+  return c.json(context);
+});
+
+/** 手动触发压缩（排查 / 测试用；正常由落库路径按阈值自动触发） */
+app.post("/workspace/sessions/:id/compact", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const id = c.req.param("id");
+  const { DEFAULT_COMPACTION_CONFIG, compactThread, getThread } = await import(
+    "./conversation/index.js"
+  );
+  if (!getThread(workspace, id)) {
+    return c.json({ error: "SESSION_NOT_FOUND", message: `找不到会话: ${id}` }, 404);
+  }
+  const keep = intQuery(c.req.query("keepRecentTurns"), DEFAULT_COMPACTION_CONFIG.keepRecentTurns, 0, 1000);
+  return c.json({ compaction: compactThread(workspace, id, { keepRecentTurns: keep }) });
+});
+
+/** 在会话里检索消息（被压缩内容仍在库中，可检索） */
+app.get("/workspace/sessions/:id/search", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const id = c.req.param("id");
+  const { getThread, searchThreadMessages } = await import("./conversation/index.js");
+  if (!getThread(workspace, id)) {
+    return c.json({ error: "SESSION_NOT_FOUND", message: `找不到会话: ${id}` }, 404);
+  }
+  return c.json({ messages: searchThreadMessages(workspace, id, c.req.query("q") ?? "") });
 });
 
 // —— 智能体档案 / 工作区归属（1:1）——

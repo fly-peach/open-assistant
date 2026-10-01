@@ -224,3 +224,57 @@ describe("HTTP：TODO 读取 / 写入（2.2 / 2.4）", () => {
     expect(await fs.readFile(path.join(dir, "todos.json"), "utf8")).toBe("{ bad");
   });
 });
+
+describe("HTTP：会话库路由的参数校验（不触发 SQLite）", () => {
+  test("GET /workspace/sessions 缺 path → 400", async () => {
+    const app = await loadApp();
+    const res = await app.request("/workspace/sessions");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("WORKSPACE_INVALID_PATH");
+  });
+
+  test("GET /workspace/sessions/{id} 缺 path → 400", async () => {
+    const app = await loadApp();
+    const res = await app.request("/workspace/sessions/some-id");
+    expect(res.status).toBe(400);
+  });
+
+  test("GET /workspace/sessions?path=<不存在> → 404（校验工作区时就拦下，不碰会话库）", async () => {
+    const app = await loadApp();
+    const dir = await freshDir("http-sessions-missing");
+    const res = await app.request(`/workspace/sessions?path=${encodeURIComponent(dir)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("WORKSPACE_MISSING");
+  });
+});
+
+describe("HTTP：跨 agent 通信路由的参数校验（不触发运行）", () => {
+  test("GET /agents/contactable 缺 path → 400", async () => {
+    const app = await loadApp();
+    const res = await app.request("/agents/contactable");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("WORKSPACE_INVALID_PATH");
+  });
+
+  test("POST /agents/{id}/ask 缺 path → 400", async () => {
+    const app = await loadApp();
+    const res = await app.request("/agents/life/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "hi" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("WORKSPACE_INVALID_PATH");
+  });
+
+  test("POST /agents/{id}/ask 有 path 缺 text → 400（在校验阶段就拦下）", async () => {
+    const app = await loadApp();
+    const res = await app.request("/agents/life/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "C:\\nope" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("AGENT_INVALID_CONFIG");
+  });
+});

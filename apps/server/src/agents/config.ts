@@ -21,8 +21,9 @@ export const TOOL_GROUPS = {
   todos: ["todo_list", "todo_create", "todo_update", "todo_delete"],
   persona: ["persona_write"],
   memory: ["memory_search", "memory_read", "memory_note", "memory_core"],
+  skills: ["skill_list", "skill_read"],
   delegation: ["task"],
-  crossAgent: ["ask_agent"],
+  crossAgent: ["list_agents", "ask_agent"],
   peers: ["ask_peer"],
 } as const satisfies Record<string, readonly string[]>;
 
@@ -36,6 +37,7 @@ export const DEFAULT_TOOLS: Record<ToolGroup, boolean> = {
   todos: true,
   persona: true,
   memory: true,
+  skills: true,
   delegation: false,
   crossAgent: false,
   peers: false,
@@ -64,6 +66,8 @@ export interface AgentConfig {
   description: string;
   model: AgentModelConfig | null;
   tools: Record<ToolGroup, boolean>;
+  /** 被本 agent 关闭的技能名（共享技能也能关；不影响其他 agent，spec「关闭只影响该 agent」） */
+  disabledSkills: string[];
   approval: ApprovalLevel;
   allowSiblingInteraction: boolean;
   contactableAgents: string[];
@@ -106,6 +110,7 @@ export function defaultAgentConfig(defaults: AgentConfigDefaults): AgentConfig {
     description: defaults.description?.trim() ?? "",
     model: null,
     tools: { ...DEFAULT_TOOLS },
+    disabledSkills: [],
     approval: "auto",
     allowSiblingInteraction: false,
     contactableAgents: [],
@@ -122,6 +127,7 @@ const KNOWN_KEYS = new Set([
   "description",
   "model",
   "tools",
+  "disabledSkills",
   "approval",
   "allowSiblingInteraction",
   "contactableAgents",
@@ -228,6 +234,15 @@ export function normalizeAgentConfig(
         }
         config.tools[group as ToolGroup] = value;
       }
+    }
+  }
+
+  if (raw["disabledSkills"] !== undefined) {
+    const list = raw["disabledSkills"];
+    if (!Array.isArray(list) || list.some((v) => typeof v !== "string")) {
+      addIssue("disabledSkills", "disabledSkills 必须是字符串数组");
+    } else {
+      config.disabledSkills = list.map((v) => (v as string).trim()).filter((v) => v.length > 0);
     }
   }
 

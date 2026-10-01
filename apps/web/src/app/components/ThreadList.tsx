@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { format } from "date-fns";
-import { Loader2, MessageSquare, X } from "lucide-react";
+import { Check, Loader2, MessageSquare, Pencil, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 import { useQueryState } from "nuqs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -26,6 +27,7 @@ import { Bot } from "lucide-react";
 import zh, { t } from "@/i18n/zh";
 import { AgentSelector } from "@/app/components/agents/AgentSelector";
 import { bindWorkspace } from "@/lib/agentProfilesApi";
+import { deleteWorkspaceSession, renameWorkspaceSession } from "@/lib/sessionsApi";
 
 type StatusFilter = "all" | "idle" | "busy" | "interrupted" | "error";
 
@@ -134,6 +136,9 @@ export function ThreadList({
   const [currentThreadId, setThreadId] = useQueryState("threadId");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [busyThreadId, setBusyThreadId] = useState<string | null>(null);
 
   // 5.6：会话列表标注创建者 —— 与当前绑定不一致的旧会话显示「由 xxx 创建」。
   const { workspacePath, setWorkspacePath } = useWorkspaceContext();
@@ -146,13 +151,20 @@ export function ThreadList({
   );
 
   const threads = useThreads({
-    status: statusFilter === "all" ? undefined : statusFilter,
     limit: 20,
+    // 记录来自工作区会话库；工作区 ↔ agent 1:1 ⇒ 不同 agent 进入看到各自的会话
+    workspace: workspacePath,
   });
 
-  const flattened = useMemo(() => {
-    return threads.data?.flat() ?? [];
-  }, [threads.data]);
+  const allThreads = useMemo(() => threads.data?.flat() ?? [], [threads.data]);
+  // 状态过滤在客户端做（列表记录来自会话库，不再下推到执行引擎）
+  const flattened = useMemo(
+    () =>
+      statusFilter === "all"
+        ? allThreads
+        : allThreads.filter((thread) => thread.status === statusFilter),
+    [allThreads, statusFilter]
+  );
 
   const isLoadingMore =
     threads.size > 0 && threads.data?.[threads.size - 1] == null;
@@ -194,8 +206,55 @@ export function ThreadList({
   }, [flattened]);
 
   const interruptedCount = useMemo(() => {
-    return flattened.filter((t) => t.status === "interrupted").length;
-  }, [flattened]);
+    return allThreads.filter((t) => t.status === "interrupted").length;
+  }, [allThreads]);
+
+  // —— 会话名称的增删改（R 由 useThreads 提供；这里做重命名 / 删除）——
+
+  const startRename = useCallback((thread: ThreadItem) => {
+    setRenamingId(thread.id);
+    setRenameDraft(thread.title);
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenamingId(null);
+    setRenameDraft("");
+  }, []);
+
+  const saveRename = useCallback(async () => {
+    const id = renamingId;
+    if (!id || !workspacePath) return;
+    const title = renameDraft.trim();
+    setBusyThreadId(id);
+    try {
+      await renameWorkspaceSession(workspacePath, id, title.length > 0 ? title : null);
+      setRenamingId(null);
+      setRenameDraft("");
+      await threads.mutate();
+    } catch (err) {
+      toast.error(t(zh.threadList.renameFailed, { error: (err as Error).message }));
+    } finally {
+      setBusyThreadId(null);
+    }
+  }, [renamingId, renameDraft, workspacePath, threads]);
+
+  const removeThread = useCallback(
+    async (thread: ThreadItem) => {
+      if (!workspacePath) return;
+      if (typeof window !== "undefined" && !window.confirm(zh.threadList.deleteConfirm)) return;
+      setBusyThreadId(thread.id);
+      try {
+        await deleteWorkspaceSession(workspacePath, thread.id);
+        if (currentThreadId === thread.id) await setThreadId(null);
+        await threads.mutate();
+      } catch (err) {
+        toast.error(t(zh.threadList.deleteFailed, { error: (err as Error).message }));
+      } finally {
+        setBusyThreadId(null);
+      }
+    },
+    [workspacePath, currentThreadId, setThreadId, threads]
+  );
 
   // Expose thread list revalidation to parent component
   // Use refs to create a stable callback that always calls the latest mutate function
@@ -346,58 +405,123 @@ export function ThreadList({
                     {GROUP_LABELS[group]}
                   </h4>
                   <div className="flex flex-col gap-1">
-                    {groupThreads.map((thread) => (
-                      <button
-                        key={thread.id}
-                        type="button"
-                        onClick={() => onThreadSelect(thread.id)}
-                        className={cn(
-                          "grid w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors duration-200",
-                          "hover:bg-accent",
-                          currentThreadId === thread.id
-                            ? "border border-primary bg-accent hover:bg-accent"
-                            : "border border-transparent bg-transparent"
-                        )}
-                        aria-current={currentThreadId === thread.id}
-                      >
-                        <div className="min-w-0 flex-1">
-                          {/* Title + Timestamp Row */}
-                          <div className="mb-1 flex items-center justify-between">
-                            <h3 className="truncate text-sm font-semibold">
-                              {thread.title}
-                            </h3>
-                            <span className="ml-2 flex-shrink-0 text-xs text-muted-foreground">
-                              {formatTime(thread.updatedAt)}
-                            </span>
-                          </div>
-                          {/* Description + Status Row */}
-                          <div className="flex items-center justify-between">
-                            <p className="flex-1 truncate text-sm text-muted-foreground">
-                              {thread.description}
-                            </p>
-                            <div className="ml-2 flex-shrink-0">
-                              <div
-                                className={cn(
-                                  "h-2 w-2 rounded-full",
-                                  getThreadColor(thread.status)
-                                )}
-                              />
-                            </div>
-                          </div>
-                          {thread.agentId && thread.agentId !== currentAgentId && (
-                            <p
-                              className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground"
-                              data-thread-agent={thread.agentId}
-                            >
-                              <Bot size={11} />
-                              {t(zh.threadAgent.createdBy, {
-                                name: agentLabel(thread.agentId, thread.agentName),
-                              })}
-                            </p>
-                          )}
+                    {groupThreads.map((thread) =>
+                      renamingId === thread.id ? (
+                        <div
+                          key={thread.id}
+                          className="flex items-center gap-1.5 rounded-lg border border-primary bg-accent px-2 py-2"
+                          data-thread-renaming={thread.id}
+                        >
+                          <input
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void saveRename();
+                              if (e.key === "Escape") cancelRename();
+                            }}
+                            placeholder={zh.threadList.renamePlaceholder}
+                            className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm"
+                            data-thread-rename-input
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void saveRename()}
+                            disabled={busyThreadId === thread.id}
+                            aria-label={zh.threadList.renameSave}
+                            title={zh.threadList.renameSave}
+                            className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-50"
+                          >
+                            <Check size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelRename}
+                            aria-label={zh.threadList.renameCancel}
+                            title={zh.threadList.renameCancel}
+                            className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                          >
+                            <X size={14} />
+                          </button>
                         </div>
-                      </button>
-                    ))}
+                      ) : (
+                        <div key={thread.id} className="group relative" data-thread-id={thread.id}>
+                          <button
+                            type="button"
+                            onClick={() => onThreadSelect(thread.id)}
+                            className={cn(
+                              "grid w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors duration-200",
+                              "hover:bg-accent",
+                              currentThreadId === thread.id
+                                ? "border border-primary bg-accent hover:bg-accent"
+                                : "border border-transparent bg-transparent"
+                            )}
+                            aria-current={currentThreadId === thread.id}
+                          >
+                            <div className="min-w-0 flex-1">
+                              {/* Title + Timestamp Row */}
+                              <div className="mb-1 flex items-center justify-between">
+                                <h3 className="truncate text-sm font-semibold">
+                                  {thread.title}
+                                </h3>
+                                <span className="ml-2 flex-shrink-0 text-xs text-muted-foreground group-hover:opacity-0">
+                                  {formatTime(thread.updatedAt)}
+                                </span>
+                              </div>
+                              {/* Description + Status Row */}
+                              <div className="flex items-center justify-between">
+                                <p className="flex-1 truncate text-sm text-muted-foreground">
+                                  {thread.description}
+                                </p>
+                                <div className="ml-2 flex-shrink-0">
+                                  <div
+                                    className={cn(
+                                      "h-2 w-2 rounded-full",
+                                      getThreadColor(thread.status)
+                                    )}
+                                  />
+                                </div>
+                              </div>
+                              {thread.agentId && thread.agentId !== currentAgentId && (
+                                <p
+                                  className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+                                  data-thread-agent={thread.agentId}
+                                >
+                                  <Bot size={11} />
+                                  {t(zh.threadAgent.createdBy, {
+                                    name: agentLabel(thread.agentId, thread.agentName),
+                                  })}
+                                </p>
+                              )}
+                            </div>
+                          </button>
+                          {/* 悬停显示的重命名 / 删除 */}
+                          <div className="absolute right-2 top-2 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                            <button
+                              type="button"
+                              onClick={() => startRename(thread)}
+                              aria-label={zh.threadList.rename}
+                              title={zh.threadList.rename}
+                              data-thread-rename={thread.id}
+                              className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void removeThread(thread)}
+                              disabled={busyThreadId === thread.id}
+                              aria-label={zh.threadList.delete}
+                              title={zh.threadList.delete}
+                              data-thread-delete={thread.id}
+                              className="rounded p-1 text-muted-foreground hover:bg-background hover:text-destructive disabled:opacity-50"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    )}
                   </div>
                 </div>
               );

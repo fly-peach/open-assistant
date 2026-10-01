@@ -44,6 +44,8 @@ import type { AgentRuntime } from "./agents/registry.js";
 import { personaTools } from "./persona-tools.js";
 import { todoTools } from "./todo-tools.js";
 import { memoryTools } from "./memory-tools.js";
+import { skillTools } from "./skill-tools.js";
+import { agentCommsTools } from "./agent-comms-tools.js";
 
 const MODEL_ID = process.env.MODEL_ID ?? "deepseek-v4.1-flash";
 
@@ -112,7 +114,7 @@ const SYSTEM_PROMPT = `你是用户的个人助手，负责帮用户管理待办
 // —— 子 agent 团队（声明式；解析 / 校验在 src/agents/team.ts）——
 
 /** 有实例的应用级工具。文件类工具（ls / read_file / …）由 deepagents 文件中间件提供，没有实例可传 */
-const APP_TOOLS = [...todoTools, ...personaTools, ...memoryTools];
+const APP_TOOLS = [...todoTools, ...personaTools, ...memoryTools, ...skillTools, ...agentCommsTools];
 
 /**
  * 子 agent 的工具白名单中间件。

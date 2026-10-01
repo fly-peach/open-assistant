@@ -5,6 +5,9 @@
  * `import { createThread, recordTurn, listSessions } from "./conversation/index.js"`。
  */
 export * from "./store.js";
+export * from "./message-slice.js";
+export * from "./compaction.js";
+export * from "./recording.js";
 export * from "./schema.js";
 export * from "./paths.js";
 export {

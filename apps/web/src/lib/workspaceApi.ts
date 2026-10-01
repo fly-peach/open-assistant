@@ -208,6 +208,21 @@ export function listFsDir(path: string): Promise<FsListResult> {
   return request<FsListResult>(`/fs/list?path=${encodeURIComponent(path)}`);
 }
 
+export interface PickFolderResult {
+  path: string | null;
+  cancelled: boolean;
+  unsupported?: boolean;
+  error?: string;
+}
+
+/**
+ * 在**后端所在机器**上弹系统「选择文件夹」对话框，返回选中的绝对路径。
+ * 无图形界面 / 取消时返回 `{ path: null, cancelled | error }`，调用方退回逐层浏览。
+ */
+export function pickNativeFolder(): Promise<PickFolderResult> {
+  return request<PickFolderResult>("/fs/pick-folder", { method: "POST" });
+}
+
 /**
  * 归一化 / 创建目录，返回归一化后的绝对路径（同一目录对应同一工作区）。
  * `create = true` 时允许路径不存在（由后端创建）。

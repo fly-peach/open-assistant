@@ -5,7 +5,7 @@
  */
 import path from "node:path";
 import { Client } from "@langchain/langgraph-sdk";
-import { createAgentClient, migrateThreadsWithoutWorkspace, searchThreadsByWorkspace } from "../src/sessions.js";
+import { backfillThreadOwnership, createAgentClient, searchThreadsByWorkspace } from "../src/sessions.js";
 import { ensureWorkspace, getDefaultWorkspacePath, getWorkspaceRoot } from "../src/workspace.js";
 
 const client = new Client({ apiUrl: process.env.LANGGRAPH_API_URL ?? "http://localhost:2024" });
@@ -43,9 +43,9 @@ const beforeCount = beforeMsgs.length;
 check("1.6 迁移前该 thread 无 workspace 归属", (thread.metadata as Record<string, unknown>)?.workspace === undefined);
 check("1.6 迁移前已有历史数据", beforeCount >= 1, `messages=${beforeCount}`);
 
-const result = await migrateThreadsWithoutWorkspace(client, { defaultWorkspacePath: defaultPath });
-console.log("      migration result:", JSON.stringify(result));
-check("1.6 迁移执行且至少补写 1 条", result.migrated >= 1);
+const result = await backfillThreadOwnership(client, { defaultWorkspacePath: defaultPath });
+console.log("      backfill result:", JSON.stringify(result));
+check("1.6 回填执行且至少修正 1 条", result.updated >= 1);
 
 const updated = await client.threads.get(thread.thread_id);
 check(
@@ -64,8 +64,8 @@ check("1.6 按默认工作区可检索到该会话", inDefault.some((t) => t.thr
 const inOther = await searchThreadsByWorkspace(client, otherPath, { limit: 200 });
 check("1.6 按其他工作区检索不到该会话（不串台）", !inOther.some((t) => t.thread_id === thread.thread_id));
 
-// 迁移幂等：再次执行不会重复补写该 thread
-const again = await migrateThreadsWithoutWorkspace(client, { defaultWorkspacePath: defaultPath });
+// 回填幂等：再次执行不会重复修正该 thread
+const again = await backfillThreadOwnership(client, { defaultWorkspacePath: defaultPath });
 const stillDefault = await client.threads.get(thread.thread_id);
 check(
   "1.6 迁移幂等（再次运行不改变归属）",

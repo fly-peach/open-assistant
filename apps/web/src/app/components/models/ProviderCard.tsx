@@ -16,6 +16,7 @@ import { CheckCircle2, ClipboardCopy, Eye, EyeOff, Loader2, RefreshCw, Trash2 } 
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Expander } from "@/components/ui/expander";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -190,21 +191,26 @@ export function ProviderCard({
   }
 
   return (
-    <section
-      className="rounded-lg border border-border bg-card p-4"
+    <Expander
+      className="rounded-lg"
       data-provider-card={provider.id}
-    >
-      <header className="mb-3 flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-semibold">{provider.name}</h3>
-        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
-          {PROVIDER_KIND_LABEL[provider.kind] ?? provider.kind}
-        </span>
-        {provider.hasApiKey && (
-          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="h-3 w-3" /> {provider.apiKeyMasked}
+      data-provider-expander={provider.id}
+      title={
+        <span className="inline-flex flex-wrap items-center gap-2">
+          {provider.name}
+          <span className="rounded-full border border-border px-2 py-0.5 text-[11px] font-normal text-muted-foreground">
+            {PROVIDER_KIND_LABEL[provider.kind] ?? provider.kind}
           </span>
-        )}
-        <div className="ml-auto flex items-center gap-2">
+          {provider.hasApiKey && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-normal text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="h-3 w-3" /> {provider.apiKeyMasked}
+            </span>
+          )}
+        </span>
+      }
+      subtitle={provider.kindHint}
+      actions={
+        <div className="flex items-center gap-2">
           <Label htmlFor={`enabled-${provider.id}`} className="text-xs text-muted-foreground">
             {zh.models.enabledLabel}
           </Label>
@@ -215,10 +221,8 @@ export function ProviderCard({
             aria-label={zh.models.enabledLabel}
           />
         </div>
-      </header>
-
-      <p className="mb-3 text-[11px] text-muted-foreground">{provider.kindHint}</p>
-
+      }
+    >
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor={`name-${provider.id}`}>{zh.models.nameLabel}</Label>
@@ -431,6 +435,6 @@ export function ProviderCard({
           </Button>
         </div>
       </div>
-    </section>
+    </Expander>
   );
 }

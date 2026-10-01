@@ -176,6 +176,8 @@ export function useChat({
     messages: stream.messages,
     isLoading: stream.isLoading,
     isThreadLoading: stream.isThreadLoading,
+    /** run 失败时的错误（如模型网关 429 限流）；由界面渲染成可读提示，而不是只在控制台 */
+    error: stream.error,
     interrupt: stream.interrupt,
     getMessagesMetadata: stream.getMessagesMetadata,
     sendMessage,

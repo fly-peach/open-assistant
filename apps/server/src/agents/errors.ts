@@ -21,7 +21,21 @@ export type AgentErrorCode =
   /** 该子 agent 不存在（无目录 / 无 SPEC.md） */
   | "SUBAGENT_NOT_FOUND"
   /** 声明内容非法（缺 description / mode 非法 / 工具名未知 / 元数据无法解析等），`field` 指向具体字段 */
-  | "SUBAGENT_INVALID_SPEC";
+  | "SUBAGENT_INVALID_SPEC"
+  /** 技能名非法（会成为目录名） */
+  | "AGENT_INVALID_SKILL"
+  /** 同名 agent 私有技能已存在 */
+  | "AGENT_SKILL_EXISTS"
+  /** 该 agent 私有技能不存在 */
+  | "AGENT_SKILL_NOT_FOUND"
+  /** 对端 agent 没有可用的工作区（未指定 / 未绑定） */
+  | "AGENT_NO_WORKSPACE"
+  /** 对端不在发起方的可联系名单里 */
+  | "AGENT_NOT_CONTACTABLE"
+  /** agent 调用层数超过上限（防递归） */
+  | "AGENT_CALL_DEPTH_EXCEEDED"
+  /** 对端执行失败（网络 / 图运行异常） */
+  | "AGENT_CALL_FAILED";
 
 export class AgentError extends Error {
   readonly code: AgentErrorCode;

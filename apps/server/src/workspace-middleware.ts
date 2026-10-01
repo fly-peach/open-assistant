@@ -49,12 +49,12 @@ import {
   prependGuidance,
   shouldInjectBootstrap,
 } from "./bootstrap.js";
-import { loadPersona, withAgentMemory, withPersona } from "./persona.js";
-import { upsertWorkspaceSessionIndex } from "./sessions.js";
+import { loadPersona, withAgentMemory, withAgentSkills, withPersona } from "./persona.js";
+import { stampThreadOwnership, upsertWorkspaceSessionIndex } from "./sessions.js";
 import { AgentError } from "./agents/errors.js";
 import { type AgentRuntime, resolveAgentRuntime } from "./agents/registry.js";
 import { gateTool } from "./agents/config.js";
-import { readBinding, stampSessionOwner } from "./binding.js";
+import { readBinding, readSessionOwners, stampSessionOwner } from "./binding.js";
 
 /** 解析当前 run 的工作区绝对路径；缺失 → 抛错（拒绝对话） */
 export function requireWorkspacePath(config?: unknown): string {
@@ -124,10 +124,58 @@ export const workspaceMiddleware = createMiddleware({
     const threadId = config.configurable?.["thread_id"];
     if (typeof threadId === "string" && threadId.length > 0) {
       await upsertWorkspaceSessionIndex(dir, { id: threadId });
-      // 记录这条会话「创建时属于哪个 agent」（换绑后仍可追溯）。
+      // 记录这条会话「创建时属于哪个 agent」（幂等，换绑后仍可追溯）。
       // 身份只认工作区绑定，绝不看客户端传来的 agent_id。
       const binding = await readBinding(dir);
-      if (binding) await stampSessionOwner(dir, threadId, binding.agentId);
+      if (binding) {
+        const owner = await stampSessionOwner(dir, threadId, binding.agentId);
+        // 把归属**合并**写进平台 thread metadata，供会话列表按工作区过滤
+        // （工作区 ↔ agent 1:1，所以按工作区过滤即按 agent 隔离会话）。
+        // 失败不影响本轮对话（stampThreadOwnership 是 best-effort）。
+        await stampThreadOwnership(threadId, { workspace: dir, agentId: owner });
+      }
+    }
+    return undefined;
+  },
+
+  /**
+   * 一轮结束 → 把这一轮落进工作区会话库（`<工作区>/.open-assistant/sessions.sqlite`）。
+   *
+   * 会话库是会话内容的**工作区事实源**（spec `session-store`「写入即时落盘」）。
+   * 幂等：同一轮（同一 turnId）重复触发整体替换（afterAgent 一轮内可能触发多次）。
+   *
+   * best-effort：落库失败不抛（不影响本轮对话）。用动态 import，不碰 SQLite
+   * 的调用方（如纯 JSON 单测）不必加载 `node:sqlite`。
+   */
+  afterAgent: async (state) => {
+    try {
+      // 会话库用 `node:sqlite`。本项目规矩：碰 SQLite 的测试用 Node 跑
+      // （见 db.ts 顶部注释）。bun 下 node:sqlite 的句柄在 Windows 关连接后
+      // 仍会锁住工作区文件（测试删临时目录时 EBUSY），故 bun 环境跳过落库，
+      // 会话库的落库行为在 Node 侧（test:conversation）覆盖。
+      if (typeof (globalThis as { Bun?: unknown }).Bun !== "undefined") return undefined;
+      const config = getConfig() as { configurable?: Record<string, unknown> };
+      const workspace = readWorkspacePathFromConfig(config);
+      const threadId = config.configurable?.["thread_id"];
+      if (!workspace || typeof threadId !== "string" || threadId.length === 0) return undefined;
+      let dir: string;
+      try {
+        dir = normalizeWorkspacePath(workspace);
+      } catch {
+        return undefined;
+      }
+      const [binding, owners] = await Promise.all([
+        readBinding(dir),
+        readSessionOwners(dir).catch(() => ({}) as Record<string, string>),
+      ]);
+      const agentId = owners[threadId] ?? binding?.agentId ?? "unknown";
+      const messages =
+        (state as { messages?: import("@langchain/core/messages").BaseMessage[] } | undefined)
+          ?.messages ?? [];
+      const { recordTurnToWorkspace } = await import("./conversation/recording.js");
+      recordTurnToWorkspace(dir, { threadId, agentId, messages });
+    } catch {
+      // best-effort：落库失败不影响本轮对话
     }
     return undefined;
   },
@@ -164,6 +212,11 @@ export const workspaceMiddleware = createMiddleware({
     if (runtime && runtime.memory.trim().length > 0) {
       const base = (updates["systemMessage"] as typeof request.systemMessage | undefined) ?? request.systemMessage;
       updates["systemMessage"] = withAgentMemory(base, runtime.memory);
+    }
+    // 技能渐进披露：只注入名称 + 用途（正文走 skill_read）
+    if (runtime && runtime.skills.some((skill) => !skill.disabled)) {
+      const base = (updates["systemMessage"] as typeof request.systemMessage | undefined) ?? request.systemMessage;
+      updates["systemMessage"] = withAgentSkills(base, runtime.skills);
     }
 
     if (isFirstUserInteraction(request.messages) && (await shouldInjectBootstrap(dir))) {

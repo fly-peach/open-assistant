@@ -793,6 +793,57 @@ export function setTurnCompactedBy(
 }
 
 /**
+ * 按关键词检索某会话的消息（`content LIKE`）。用于「被压缩内容仍可检索」：
+ * 压缩只把轮次标为已压缩，消息仍在库里，所以检索得到。
+ */
+export function searchThreadMessages(
+  workspaceDir: string,
+  threadId: string,
+  query: string,
+  options: { limit?: number } = {},
+): MessageRecord[] {
+  if (typeof query !== "string" || query.length === 0) return [];
+  const escaped = query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  const rows = openConversationDb(workspaceDir)
+    .prepare(
+      `SELECT m.* FROM ${MESSAGES_TABLE} m
+       JOIN ${TURNS_TABLE} t ON t.id = m.turn_id
+       WHERE m.thread_id = ? AND m.content LIKE ? ESCAPE '\\'
+       ORDER BY t.idx ASC, m.seq ASC, m.id ASC
+       LIMIT ?`,
+    )
+    .all(threadId, `%${escaped}%`, options.limit ?? 50) as Row[];
+  return rows.map(mapMessage);
+}
+
+/**
+ * 删除某会话中「结束（或开始）时间早于 cutoff」的轮次（消息随外键级联删除）。
+ * 返回删除的轮次数。用于「保留期限」：超期内容才清理，未超期的 MUST NOT 被清理。
+ */
+export function pruneTurnsBefore(
+  workspaceDir: string,
+  threadId: string,
+  cutoffIso: string,
+): number {
+  const db = openConversationDb(workspaceDir);
+  return withTransaction(workspaceDir, () => {
+    const rows = db
+      .prepare(
+        `SELECT id FROM ${TURNS_TABLE}
+         WHERE thread_id = ?
+           AND COALESCE(ended_at, started_at) IS NOT NULL
+           AND COALESCE(ended_at, started_at) < ?`,
+      )
+      .all(threadId, cutoffIso) as Row[];
+    const ids = rows.map((row) => String(row["id"]));
+    if (ids.length === 0) return 0;
+    const del = db.prepare(`DELETE FROM ${TURNS_TABLE} WHERE id = ?`);
+    for (const id of ids) del.run(id);
+    return ids.length;
+  });
+}
+
+/**
  * 一轮原子落库：轮次记录 + 用户输入 + 该轮全部消息，单事务完成。
  * 非流式路径直接用这个；流式路径用 startTurn / appendMessage / finishTurn。
  */
@@ -825,6 +876,80 @@ export function recordTurn(workspaceDir: string, input: RecordTurnInput): Record
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
     });
     return { turn: finished, messages: stored };
+  });
+}
+
+/**
+ * 幂等落库一轮（重放安全）：同一 `turnId` 再次调用会**整体替换**该轮的消息与状态，
+ * 而不是追加。用于「一轮在图上可能多次收尾」的场景 —— `afterAgent` 可能触发多次，
+ * 每次都把当前快照写进去，最终以最后一次为准。
+ *
+ * 与 `recordTurn` 的区别：`recordTurn` 假定该轮不存在（重复调用会主键冲突）；
+ * 本函数允许重复调用。`turnId` 一般用本轮**首条用户消息的 id**（稳定、跨重放不变）。
+ */
+export function upsertRecordedTurn(
+  workspaceDir: string,
+  input: RecordTurnInput & { turnId: string },
+): RecordTurnResult {
+  const threadId = requireNonEmpty(input?.threadId, "threadId");
+  const turnId = requireNonEmpty(input?.turnId, "turnId");
+  const userContent = typeof input.userContent === "string" ? input.userContent : "";
+  const messages = input.messages ?? [];
+  const turnStatus = assertOneOf(input.status ?? "done", TURN_STATUSES, "status");
+
+  return withTransaction(workspaceDir, () => {
+    requireThreadRow(workspaceDir, threadId);
+    const existing = getTurn(workspaceDir, turnId);
+
+    if (!existing) {
+      const turn = startTurn(workspaceDir, {
+        threadId,
+        userContent,
+        turnId,
+        ...(input.idx !== undefined ? { idx: input.idx } : {}),
+        ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
+        ...(input.usage !== undefined ? { usage: input.usage } : {}),
+        ...(input.autoTitle !== undefined ? { autoTitle: input.autoTitle } : {}),
+      });
+      const stored = messages.map((message) => insertMessage(workspaceDir, threadId, turn.id, message));
+      if (turnStatus === "running") return { turn, messages: stored };
+      const finished = finishTurn(workspaceDir, turn.id, {
+        status: turnStatus,
+        ...(input.endedAt !== undefined ? { endedAt: input.endedAt } : {}),
+        ...(input.usage !== undefined ? { usage: input.usage } : {}),
+      });
+      return { turn: finished, messages: stored };
+    }
+
+    // 已存在：整体替换消息（含用户输入），并更新轮次状态 / 时间
+    const db = openConversationDb(workspaceDir);
+    db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE turn_id = ?`).run(turnId);
+    const startedAt = input.startedAt ?? existing.startedAt ?? nowIso();
+    insertMessage(workspaceDir, threadId, turnId, {
+      role: "human",
+      kind: "text",
+      content: userContent,
+      createdAt: startedAt,
+      seq: 0,
+    });
+    const stored = messages.map((message) => insertMessage(workspaceDir, threadId, turnId, message));
+    const endedAt = input.endedAt ?? nowIso();
+    db.prepare(
+      `UPDATE ${TURNS_TABLE}
+         SET user_content = ?, started_at = ?, status = ?, ended_at = ?, usage_json = COALESCE(?, usage_json)
+         WHERE id = ?`,
+    ).run(
+      userContent,
+      startedAt,
+      turnStatus,
+      turnStatus === "running" ? null : endedAt,
+      input.usage ? JSON.stringify(input.usage) : null,
+      turnId,
+    );
+    db.prepare(`UPDATE ${THREADS_TABLE} SET updated_at = ? WHERE id = ?`).run(endedAt, threadId);
+    const turn = getTurn(workspaceDir, turnId);
+    if (!turn) throw new ConversationStoreError("CONVERSATION_DB_ERROR", `轮次更新后读不到: ${turnId}`);
+    return { turn, messages: stored };
   });
 }
 
