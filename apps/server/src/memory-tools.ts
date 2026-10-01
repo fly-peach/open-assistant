@@ -32,14 +32,14 @@ import { errorText, workspaceDirOf } from "./tool-runtime.js";
 async function agentDirOf(runtime: unknown): Promise<string> {
   const workspaceDir = await workspaceDirOf(runtime);
   const binding = await readBinding(workspaceDir);
-  if (!binding?.agentId) {
+  if (!binding?.activeAgentId) {
     throw new Error(
       "当前工作区尚未绑定 agent：记忆属于 agent，请先在「工作区 → 选择 agent」里完成绑定",
     );
   }
   // 走 registry 以便复用缓存与校验（agent 不存在时会给出可读错误）
-  const def = await resolveAgentRuntime(binding.agentId);
-  return def ? agentDirPath(binding.agentId) : agentDirPath(binding.agentId);
+  const def = await resolveAgentRuntime(binding.activeAgentId);
+  return def ? agentDirPath(binding.activeAgentId) : agentDirPath(binding.activeAgentId);
 }
 
 export const memorySearchTool = tool(

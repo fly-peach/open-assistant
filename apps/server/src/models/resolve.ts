@@ -171,7 +171,7 @@ export async function resolveEffectiveModel(
   const binding = await readBinding(workspaceDir);
 
   if (binding) {
-    const runtime = await resolveAgentRuntime(binding.agentId);
+    const runtime = await resolveAgentRuntime(binding.activeAgentId);
     const configured = runtime.config.model;
     if (configured) {
       const provider =

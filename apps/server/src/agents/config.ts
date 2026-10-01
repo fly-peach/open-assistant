@@ -67,6 +67,16 @@ export interface AgentConfig {
   approval: ApprovalLevel;
   allowSiblingInteraction: boolean;
   contactableAgents: string[];
+  /**
+   * 是否出现在聊天面的智能体选择器里（对应 QwenPaw 的 `isAgentAvailableInChat`）。
+   * 默认 true；宿主内部用的执行引擎可以置 false，让它不算一个可选的「人格」。
+   */
+  availableInChat: boolean;
+  /**
+   * 置顶到选择器第一组（对应 QwenPaw 的 `pinned`）。
+   * 注意这是**全局偏好**（属于 agent 自己），不是「某个工作区里置顶」。
+   */
+  pinned: boolean;
 }
 
 export interface AgentConfigDefaults {
@@ -86,6 +96,8 @@ export function defaultAgentConfig(defaults: AgentConfigDefaults): AgentConfig {
     approval: "auto",
     allowSiblingInteraction: false,
     contactableAgents: [],
+    availableInChat: true,
+    pinned: false,
   };
 }
 
@@ -98,6 +110,8 @@ const KNOWN_KEYS = new Set([
   "approval",
   "allowSiblingInteraction",
   "contactableAgents",
+  "availableInChat",
+  "pinned",
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -226,6 +240,22 @@ export function normalizeAgentConfig(
       addIssue("contactableAgents", "contactableAgents 必须是字符串数组");
     } else {
       config.contactableAgents = list.map((v) => (v as string).trim()).filter((v) => v.length > 0);
+    }
+  }
+
+  if (raw["availableInChat"] !== undefined) {
+    if (typeof raw["availableInChat"] !== "boolean") {
+      addIssue("availableInChat", "availableInChat 必须是布尔值");
+    } else {
+      config.availableInChat = raw["availableInChat"];
+    }
+  }
+
+  if (raw["pinned"] !== undefined) {
+    if (typeof raw["pinned"] !== "boolean") {
+      addIssue("pinned", "pinned 必须是布尔值");
+    } else {
+      config.pinned = raw["pinned"];
     }
   }
 

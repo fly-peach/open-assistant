@@ -102,7 +102,7 @@ async function resolveAgentId(
   try {
     const binding = await readBinding(workspace);
     if (!binding) return { agentId: null, error: "工作区尚未绑定 agent" };
-    return { agentId: binding.agentId };
+    return { agentId: binding.activeAgentId };
   } catch (err) {
     return { agentId: null, error: `读取工作区绑定失败：${(err as Error).message}` };
   }

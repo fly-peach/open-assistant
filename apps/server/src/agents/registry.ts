@@ -95,6 +95,15 @@ export interface AgentModelSummary {
   providerId?: string;
 }
 
+/**
+ * 选择器里用的运行状态。
+ *
+ * 只发三种：`disabled` / `failed` / `running`。
+ * QwenPaw 的 `pending` / `starting` 我们**不造** —— 我们的 agent 是文件定义，
+ * 没有异步启动过程，编两个永远不会出现的中间态只会让界面显示假进度。
+ */
+export type AgentStartupStatus = "disabled" | "failed" | "running";
+
 export interface AgentSummary {
   id: string;
   name: string;
@@ -103,6 +112,12 @@ export interface AgentSummary {
   model?: AgentModelSummary | null;
   valid: boolean;
   issues?: string[];
+  /** 是否出现在聊天面的选择器里（agent 自己的偏好） */
+  availableInChat: boolean;
+  /** 是否置顶到选择器第一组（agent 自己的偏好） */
+  pinned: boolean;
+  /** 运行状态：配置非法 → failed；否则 running（enabled 在工作区那一层，见 binding.ts） */
+  startupStatus: AgentStartupStatus;
 }
 
 export interface AgentDefinition {
@@ -222,7 +237,15 @@ export async function listAgents(): Promise<AgentListResult> {
     const id = entry.name;
     const dir = path.join(root, id);
     if (!isValidAgentId(id)) {
-      agents.push({ id, name: id, valid: false, issues: ["目录名不是合法的 agent 标识"] });
+      agents.push({
+        id,
+        name: id,
+        valid: false,
+        issues: ["目录名不是合法的 agent 标识"],
+        availableInChat: false,
+        pinned: false,
+        startupStatus: "failed",
+      });
       continue;
     }
     const issues = await collectIssues(id, dir);
@@ -230,6 +253,9 @@ export async function listAgents(): Promise<AgentListResult> {
     let description: string | undefined;
     // undefined = 配置读不出来（别把「读不到」说成「跟随全局默认」）
     let model: AgentModelSummary | null | undefined = undefined;
+    let availableInChat = true;
+    let pinned = false;
+    let configOk = true;
     try {
       const config = await readAgentConfig(id, dir);
       name = config.name;
@@ -240,11 +266,21 @@ export async function listAgents(): Promise<AgentListResult> {
             ...(config.model.providerId ? { providerId: config.model.providerId } : {}),
           }
         : null;
+      availableInChat = config.availableInChat;
+      pinned = config.pinned;
     } catch {
       // 配置非法 → 用目录名兜底展示，异常已记在 issues 里
       model = undefined;
+      configOk = false;
     }
-    const summary: AgentSummary = { id, name, valid: issues.length === 0 };
+    const summary: AgentSummary = {
+      id,
+      name,
+      valid: issues.length === 0,
+      availableInChat: availableInChat && configOk,
+      pinned,
+      startupStatus: !configOk ? "failed" : "running",
+    };
     if (description !== undefined) summary.description = description;
     if (model !== undefined) summary.model = model;
     if (issues.length > 0) summary.issues = issues;
@@ -341,6 +377,20 @@ export async function updateAgent(agentId: string, patch: UpdateAgentInput): Pro
 }
 
 /** 删除 agent 定义（整目录删除） */
+/** 置顶 / 取消置顶（全局偏好，写在 agent 自己的 config.json 里） */
+export async function setAgentPinned(agentId: string, pinned: boolean): Promise<AgentConfig> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  const current = await readAgentConfig(agentId, dir);
+  const next: AgentConfig = { ...current, pinned };
+  await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), next);
+  invalidateAgentRuntime(agentId);
+  return next;
+}
+
 export async function deleteAgent(agentId: string): Promise<void> {
   assertValidAgentId(agentId);
   const dir = agentDirPath(agentId);

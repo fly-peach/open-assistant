@@ -88,6 +88,7 @@ import {
   deleteAgent,
   listAgents,
   readAgent,
+  setAgentPinned,
   updateAgent,
 } from "./agents/registry.js";
 import {
@@ -103,7 +104,15 @@ import {
   listChannelViews,
   upsertChannelView,
 } from "./channels/index.js";
-import { readBindingView, writeBinding } from "./binding.js";
+import {
+  addWorkspaceAgent,
+  readBindingView,
+  readWorkspaceAgentsView,
+  removeWorkspaceAgent,
+  setActiveAgent,
+  setWorkspaceAgentEnabled,
+  writeBinding,
+} from "./binding.js";
 import {
   JobError,
   applyJobPatch,
@@ -465,7 +474,56 @@ app.put("/workspace/binding", async (c) => {
   }
   const mode = body.mode === "archive" ? "archive" : "keep";
   const result = await writeBinding(body.path, body.agentId, { mode, reason: "user" });
-  return c.json({ agentId: result.binding.agentId });
+  return c.json({ agentId: result.binding.activeAgentId });
+});
+
+// —— 智能体选择器（一个工作区 N 个 agent + 一个激活位）——
+//
+// 契约见 apps/web/src/lib/workspaceAgentsApi.ts。这里只做薄转发，规则全在 binding.ts：
+// 默认 agent 不可停用/移除；停用或移除激活位时自动回落默认 agent。
+
+app.get("/workspace/agents", async (c) => {
+  const workspace = requireWorkspaceQuery(c.req.query("path"));
+  return c.json(await readWorkspaceAgentsView(workspace));
+});
+
+/** 加成员 / 改启用状态 / 切激活位（一次请求可以同时做） */
+app.put("/workspace/agents/:id", async (c) => {
+  const workspace = requireWorkspaceQuery(c.req.query("path"));
+  const id = c.req.param("id");
+  const body = (await c.req.json().catch(() => ({}))) as {
+    enabled?: unknown;
+    active?: unknown;
+    add?: unknown;
+  };
+  if (body.add === true) {
+    await addWorkspaceAgent(workspace, id, {
+      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+      ...(body.active === true ? { makeActive: true } : {}),
+    });
+  } else {
+    if (typeof body.enabled === "boolean") {
+      await setWorkspaceAgentEnabled(workspace, id, body.enabled);
+    }
+    if (body.active === true) {
+      // 激活位要求「已启用」；上面的 enable 先落盘，所以这里能直接切
+      await setActiveAgent(workspace, id);
+    }
+  }
+  return c.json(await readWorkspaceAgentsView(workspace));
+});
+
+app.delete("/workspace/agents/:id", async (c) => {
+  const workspace = requireWorkspaceQuery(c.req.query("path"));
+  await removeWorkspaceAgent(workspace, c.req.param("id"));
+  return c.json(await readWorkspaceAgentsView(workspace));
+});
+
+/** 置顶是 agent 自己的全局偏好（不属于任何工作区） */
+app.put("/agents/:id/pinned", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { pinned?: unknown };
+  const config = await setAgentPinned(c.req.param("id"), body.pinned === true);
+  return c.json({ id: c.req.param("id"), pinned: config.pinned });
 });
 
 // —— 定时任务（按工作区，tasks 10.1–10.5 / 10.8；字段契约见 apps/web/src/lib/jobsApi.ts）——

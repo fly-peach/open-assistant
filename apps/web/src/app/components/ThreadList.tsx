@@ -24,6 +24,7 @@ import { useBindingState } from "@/app/hooks/useAgents";
 import { useWorkspaceContext } from "@/providers/WorkspaceProvider";
 import { Bot } from "lucide-react";
 import zh, { t } from "@/i18n/zh";
+import { AgentSelector } from "@/app/components/agents/AgentSelector";
 
 type StatusFilter = "all" | "idle" | "busy" | "interrupted" | "error";
 
@@ -224,6 +225,12 @@ export function ThreadList({
 
   return (
     <div className="absolute inset-0 flex flex-col">
+      {/*
+        智能体选择器放侧边栏顶部（对齐 QwenPaw 的 Sidebar + AgentSelector）：
+        「这个工作区现在用哪个助手、还能用哪些」应该在会话列表之前看到。
+      */}
+      <AgentSelector workspace={workspacePath} onActiveAgentChange={() => void binding.reload()} />
+
       {/* Header with title, filter, and close button */}
       <div className="grid flex-shrink-0 grid-cols-[1fr_auto] items-center gap-3 border-b border-border p-4">
         <h2 className="text-lg font-semibold tracking-tight">{zh.threadList.title}</h2>
