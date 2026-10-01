@@ -1,0 +1,33 @@
+{
+  "name": "@open-assistant/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "langgraphjs dev",
+    "smoke": "bun run scripts/smoke.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "probe:workspace": "bun run scripts/probe-workspace.ts",
+    "probe:http": "bun run scripts/probe-http.ts",
+    "probe:migration": "bun run scripts/probe-migration.ts",
+    "probe:todos": "bun run scripts/probe-todos-session.ts",
+    "probe:bootstrap": "bun run scripts/probe-bootstrap.ts",
+    "probe:patch": "bun run scripts/probe-patch-toolcalls.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.13",
+    "@langchain/langgraph": "^1.4.18",
+    "@langchain/langgraph-checkpoint": "^1.1.5",
+    "@langchain/langgraph-sdk": "^1.12.0",
+    "@langchain/openai": "^1.4.1",
+    "deepagents": "^1.14.1",
+    "hono": "^4.13.12",
+    "langchain": "^1.5.14",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@langchain/langgraph-cli": "^1.5.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}

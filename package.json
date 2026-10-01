@@ -1,0 +1,13 @@
+{
+  "name": "open-assistant",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:server": "bun run --cwd apps/server dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "smoke": "bun run --cwd apps/server smoke"
+  }
+}

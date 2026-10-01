@@ -1,0 +1,12 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "assistant": "./src/agent.ts:agent"
+  },
+  "http": {
+    "app": "./src/http.ts:app"
+  },
+  "env": ".env"
+}
