@@ -132,7 +132,7 @@ import {
   listChannelViews,
   upsertChannelView,
 } from "./channels/index.js";
-import { readBindingView, writeBinding } from "./binding.js";
+import { readBindingView, releaseBinding, writeBinding } from "./binding.js";
 import { readAgentProfilesView } from "./agent-profiles.js";
 import {
   JobError,
@@ -147,6 +147,7 @@ import {
   runJobNow,
 } from "./jobs/index.js";
 import { cronNext } from "./jobs/cron.js";
+import { expandJobOccurrences } from "./jobs/occurrences.js";
 import { readProjectMemory, writeProjectMemory } from "./project-memory.js";
 import {
   archiveAnswer,
@@ -368,8 +369,13 @@ app.patch("/agents/:id", async (c) => {
 });
 
 app.delete("/agents/:id", async (c) => {
-  await deleteAgent(c.req.param("id"));
-  return c.json({ ok: true });
+  const id = c.req.param("id");
+  // 先把它维护的工作区解开绑定，否则工作区会指向一个已不存在的 agent（打不开）
+  const def = await readAgent(id).catch(() => null);
+  const workspaceDir = def?.config.workspaceDir;
+  const unbound = workspaceDir ? await releaseBinding(workspaceDir, id).catch(() => false) : false;
+  await deleteAgent(id);
+  return c.json({ ok: true, unboundWorkspace: unbound ? workspaceDir : null });
 });
 
 app.get("/agents/:id/memory", async (c) => {
@@ -801,6 +807,15 @@ app.get("/jobs", async (c) => {
   }
   const snapshot = await readJobs(dir);
   return c.json({ workspace: dir, exists: snapshot.exists, jobs: snapshot.file.jobs });
+});
+
+/** 任务在 [from, to] 区间内的发生时刻（日历主 tab 用） */
+app.get("/jobs/occurrences", async (c) => {
+  const workspace = await resolveWorkspaceDir(requireWorkspaceQuery(c.req.query("path")));
+  const from = c.req.query("from") ?? new Date().toISOString();
+  const to = c.req.query("to") ?? new Date(Date.now() + 7 * 86_400_000).toISOString();
+  const snapshot = await readJobs(workspace);
+  return c.json({ occurrences: expandJobOccurrences(snapshot.file.jobs, from, to) });
 });
 
 app.post("/jobs", async (c) => {

@@ -143,6 +143,19 @@ export async function readBinding(workspaceDir: string): Promise<WorkspaceBindin
   return binding;
 }
 
+/**
+ * 解开某工作区的绑定（仅当它当前绑定的正是 `agentId` 时）：删掉绑定记录文件，
+ * 工作区回到「未绑定」状态（之后需重新选一位 agent）。返回是否真的解开了。
+ *
+ * 用在「删除 agent」时：否则工作区会指向一个已不存在的 agent，变成打不开的状态。
+ */
+export async function releaseBinding(workspaceDir: string, agentId: string): Promise<boolean> {
+  const binding = await readBinding(workspaceDir).catch(() => null);
+  if (!binding || binding.agentId !== agentId) return false;
+  await fs.rm(workspaceProjectPath(workspaceDir), { force: true });
+  return true;
+}
+
 // —— 会话归属标注（过渡载体，tasks 2 后由 sqlite 承接）——
 
 interface SessionOwners {

@@ -17,9 +17,15 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 
-/** 默认 agent 标识与显示名（本组已定默认，见任务说明） */
-export const DEFAULT_AGENT_ID = "xiaozhu";
-export const DEFAULT_AGENT_NAME = "小助";
+/** 默认 agent 标识与显示名（= 主智能体「生活管家」；它不可删除） */
+export const DEFAULT_AGENT_ID = "life";
+export const DEFAULT_AGENT_NAME = "生活管家";
+
+/**
+ * 主智能体：体系里必须有的一位（四个个人助理的入口）。**不可删除**。
+ * 目前就是默认 agent 本体。
+ */
+export const MAIN_AGENT_ID = DEFAULT_AGENT_ID;
 
 /** 覆盖 agents 根的环境变量 */
 export const AGENTS_ROOT_ENV = "AGENTS_ROOT";

@@ -32,6 +32,8 @@ import {
 import {
   clearAgentRuntimeCache,
   createAgent,
+  deleteAgent,
+  agentExists,
   isValidAgentId,
   listAgents,
   readAgent,
@@ -694,18 +696,40 @@ describe("1.12 运行身份以绑定为准（工具白名单不被绕过）", ()
 });
 
 describe("1.4 默认 agent 播种", () => {
-  test("根目录为空时自动播种 xiaozhu（小助）", async () => {
+  test("根目录为空时自动播种四位个人助理（含主智能体 life）", async () => {
     const emptyRoot = path.join(root, "seed-root");
     const prev = process.env[AGENTS_ROOT_ENV];
     process.env[AGENTS_ROOT_ENV] = emptyRoot;
     try {
       const listed = await listAgents();
-      expect(listed.agents.map((a) => a.id)).toContain(DEFAULT_AGENT_ID);
-      expect(listed.agents.find((a) => a.id === DEFAULT_AGENT_ID)?.name).toBe("小助");
-      const def = await readAgent(DEFAULT_AGENT_ID);
-      expect(def.persona.length).toBeGreaterThan(50);
+      const ids = listed.agents.map((a) => a.id);
+      expect(ids).toEqual(
+        expect.arrayContaining(["life", "trainer", "nutritionist", "programmer"]),
+      );
+      const life = listed.agents.find((a) => a.id === DEFAULT_AGENT_ID);
+      expect(life?.name).toBe("生活管家");
+      // 主智能体标记：不可删除
+      expect(life?.main).toBe(true);
+      expect(listed.agents.find((a) => a.id === "trainer")?.main).toBe(false);
+      expect((await readAgent(DEFAULT_AGENT_ID)).persona.length).toBeGreaterThan(50);
     } finally {
       process.env[AGENTS_ROOT_ENV] = prev;
+    }
+  });
+
+  test("主智能体不可删除；普通 agent 可删", async () => {
+    const emptyRoot = path.join(root, "seed-del");
+    const prev = process.env[AGENTS_ROOT_ENV];
+    process.env[AGENTS_ROOT_ENV] = emptyRoot;
+    try {
+      await listAgents();
+      await expect(deleteAgent(DEFAULT_AGENT_ID)).rejects.toThrow(/主智能体/);
+      expect(await agentExists(DEFAULT_AGENT_ID)).toBe(true);
+      await deleteAgent("trainer");
+      expect(await agentExists("trainer")).toBe(false);
+    } finally {
+      process.env[AGENTS_ROOT_ENV] = prev;
+      clearAgentRuntimeCache();
     }
   });
 });

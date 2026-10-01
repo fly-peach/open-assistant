@@ -51,7 +51,7 @@ describe("导航数据表（10.3）", () => {
   test("路径匹配：精确优先，其次最长前缀", () => {
     expect(matchNavEntry("/")?.key).toBe("chat");
     expect(matchNavEntry("/settings")?.key).toBe("settings");
-    expect(matchNavEntry("/todos/abc")?.key).toBe("todos");
+    expect(matchNavEntry("/schedule/abc")?.key).toBe("schedule");
     expect(matchNavEntry("/unknown")).toBeUndefined();
   });
 
@@ -75,31 +75,31 @@ describe("核心条目不可隐藏（10.3）", () => {
   });
 
   test("即使配置里被人为写进核心条目，也依然可见", () => {
-    const config = parseNavConfig({ hidden: ["chat", "settings", "jobs"] });
+    const config = parseNavConfig({ hidden: ["chat", "settings", "schedule"] });
     const visible = visibleEntries(NAV_ENTRIES, config).map((e) => e.key);
     expect(visible).toContain("chat");
     expect(visible).toContain("settings");
-    expect(visible).not.toContain("jobs");
+    expect(visible).not.toContain("schedule");
   });
 
   test("扩展条目可隐藏也可恢复", () => {
-    const config = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "jobs");
+    const config = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "schedule");
     expect(visibleEntries(NAV_ENTRIES, config).map((e) => e.key)).not.toContain(
-      "jobs"
+      "schedule"
     );
-    const restored = toggleHidden(NAV_ENTRIES, config, "jobs");
+    const restored = toggleHidden(NAV_ENTRIES, config, "schedule");
     expect(visibleEntries(NAV_ENTRIES, restored).map((e) => e.key)).toContain(
-      "jobs"
+      "schedule"
     );
   });
 });
 
 describe("排序与持久化载荷（10.4）", () => {
   test("上移 / 下移只换相邻可见条目的位置", () => {
-    const up = moveEntry(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "todos", -1);
-    expect(orderedKeys(NAV_ENTRIES, up).slice(0, 2)).toEqual(["todos", "chat"]);
-    const down = moveEntry(NAV_ENTRIES, up, "todos", 1);
-    expect(orderedKeys(NAV_ENTRIES, down).slice(0, 2)).toEqual(["chat", "todos"]);
+    const up = moveEntry(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "schedule", -1);
+    expect(orderedKeys(NAV_ENTRIES, up).slice(0, 2)).toEqual(["schedule", "chat"]);
+    const down = moveEntry(NAV_ENTRIES, up, "schedule", 1);
+    expect(orderedKeys(NAV_ENTRIES, down).slice(0, 2)).toEqual(["chat", "schedule"]);
   });
 
   test("越界移动不改变配置", () => {
@@ -108,26 +108,26 @@ describe("排序与持久化载荷（10.4）", () => {
   });
 
   test("隐藏条目不参与相邻移动，但相对次序不乱", () => {
-    const hiddenJobs = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "jobs");
-    const moved = moveEntry(NAV_ENTRIES, hiddenJobs, "memory", -1);
-    const before = orderedKeys(NAV_ENTRIES, hiddenJobs).indexOf("memory");
+    const hiddenSchedule = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "schedule");
+    const moved = moveEntry(NAV_ENTRIES, hiddenSchedule, "memory", -1);
+    const before = orderedKeys(NAV_ENTRIES, hiddenSchedule).indexOf("memory");
     const order = orderedKeys(NAV_ENTRIES, moved);
     // 不复用具体邻居名（导航表会变）：只断言「确实上移了」
     expect(order.indexOf("memory")).toBeLessThan(before);
-    expect(order).toContain("jobs");
+    expect(order).toContain("schedule");
   });
 
   test("拖拽落位（moveEntryBefore）插到目标之前", () => {
-    const config = moveEntryBefore(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "settings", "todos");
+    const config = moveEntryBefore(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "settings", "schedule");
     expect(orderedKeys(NAV_ENTRIES, config).slice(0, 3)).toEqual([
       "chat",
       "settings",
-      "todos",
+      "schedule",
     ]);
   });
 
   test("顺序可序列化后原样读回（刷新保持）", () => {
-    const config = moveEntry(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "todos", -1);
+    const config = moveEntry(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "schedule", -1);
     const roundTrip = parseNavConfig(JSON.parse(serializeNavConfig(config)));
     expect(roundTrip).toEqual(config);
     expect(orderedKeys(NAV_ENTRIES, roundTrip)).toEqual(
@@ -157,10 +157,10 @@ describe("排序与持久化载荷（10.4）", () => {
 
 describe("重置只影响导航配置（10.5）", () => {
   test("resetNavConfig 返回默认顺序与显隐", () => {
-    const mess = parseNavConfig({ order: ["memory"], hidden: ["jobs", "todos"] });
-    const cronEntry = NAV_ENTRIES.find((entry) => entry.key === "jobs");
-    expect(cronEntry).toBeDefined();
-    expect(isHidden(cronEntry!, mess)).toBe(true);
+    const mess = parseNavConfig({ order: ["memory"], hidden: ["schedule", "schedule"] });
+    const scheduleEntry = NAV_ENTRIES.find((entry) => entry.key === "schedule");
+    expect(scheduleEntry).toBeDefined();
+    expect(isHidden(scheduleEntry!, mess)).toBe(true);
     const reset = resetNavConfig();
     expect(reset).toEqual(DEFAULT_NAV_CONFIG);
     expect(orderedKeys(NAV_ENTRIES, reset)).toEqual(KEYS);

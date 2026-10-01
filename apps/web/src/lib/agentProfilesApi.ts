@@ -27,6 +27,8 @@ export interface AgentProfileEntry {
   valid: boolean;
   issues?: string[];
   active: boolean;
+  /** 是不是主智能体（生活管家；不可删除） */
+  main: boolean;
 }
 
 export interface AgentProfilesView {
@@ -55,6 +57,7 @@ function normalizeEntry(raw: unknown): AgentProfileEntry | null {
       status === "disabled" || status === "failed" || status === "running" ? status : "failed",
     valid: rec["valid"] !== false,
     active: rec["active"] === true,
+    main: rec["main"] === true,
   };
   if (typeof rec["description"] === "string" && rec["description"].length > 0) {
     entry.description = rec["description"];

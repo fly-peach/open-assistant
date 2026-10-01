@@ -30,6 +30,7 @@ import {
   AGENT_SKILLS_DIR,
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_NAME,
+  MAIN_AGENT_ID,
   SHARED_SKILLS_DIR,
   agentDirPath,
   ensureAgentsRoot,
@@ -127,6 +128,8 @@ export interface AgentSummary {
   workspaceDir: string | null;
   /** 是否可用（默认 agent 恒为 true） */
   enabled: boolean;
+  /** 是否是**主智能体**（= 生活管家；不可删除） */
+  main: boolean;
   /** 运行状态：配置非法 → failed；否则 running（enabled 在工作区那一层，见 binding.ts） */
   startupStatus: AgentStartupStatus;
 }
@@ -259,6 +262,7 @@ export async function listAgents(): Promise<AgentListResult> {
         issues: ["目录名不是合法的 agent 标识"],
         availableInChat: false,
         pinned: false,
+        main: false,
         workspaceDir: null,
         enabled: false,
         startupStatus: "failed",
@@ -300,6 +304,7 @@ export async function listAgents(): Promise<AgentListResult> {
       valid: issues.length === 0,
       availableInChat: availableInChat && configOk,
       pinned,
+      main: id === MAIN_AGENT_ID,
       // 默认 agent 恒可用：它是兜底，不能被停用（写入侧也拦，这里兜住已写坏的文件）
       enabled: configOk && (enabled || id === DEFAULT_AGENT_ID),
       workspaceDir,
@@ -766,6 +771,14 @@ export async function setAgentPinned(agentId: string, pinned: boolean): Promise<
 
 export async function deleteAgent(agentId: string): Promise<void> {
   assertValidAgentId(agentId);
+  if (agentId === MAIN_AGENT_ID) {
+    throw new AgentError(
+      "AGENT_MAIN_PROTECTED",
+      `「${DEFAULT_AGENT_NAME}」（${MAIN_AGENT_ID}）是主智能体，不可删除`,
+      409,
+      "id",
+    );
+  }
   const dir = agentDirPath(agentId);
   const st = await statOrNull(dir);
   if (!st?.isDirectory()) {
@@ -794,11 +807,13 @@ export async function listAgentIds(): Promise<string[]> {
     .sort();
 }
 
-/** 根目录为空时播种默认 agent（id xiaozhu / 显示名「小助」/ 内置默认人设） */
+/** 根目录为空时播种：直接把四位个人助理（含主智能体「生活管家」）建出来 */
 export async function ensureDefaultAgent(): Promise<string> {
   const ids = await listAgentIds();
   if (ids.length > 0) return DEFAULT_AGENT_ID;
-  await createAgent({ id: DEFAULT_AGENT_ID, name: DEFAULT_AGENT_NAME });
+  // 动态 import：避免 registry ↔ personal-assistants 的静态循环依赖
+  const { ensurePersonalAssistants } = await import("./personal-assistants.js");
+  await ensurePersonalAssistants();
   return DEFAULT_AGENT_ID;
 }
 

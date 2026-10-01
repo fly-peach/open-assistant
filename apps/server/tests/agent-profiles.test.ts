@@ -30,7 +30,7 @@ beforeAll(async () => {
   agentsRoot = path.join(root, "agents");
   process.env["AGENTS_ROOT"] = agentsRoot;
   await fs.mkdir(agentsRoot, { recursive: true });
-  await createAgent({ id: DEFAULT_AGENT_ID, name: "小助" });
+  await createAgent({ id: DEFAULT_AGENT_ID, name: "生活管家" });
   await createAgent({ id: "writer", name: "写手", description: "写作助手" });
   await createAgent({ id: "memo", name: "备忘" });
 });
@@ -127,7 +127,7 @@ describe("启用 / 停用", () => {
   test("即使有人把默认 agent 的 enabled 手工改成 false，列表也兜住为 true", async () => {
     await fs.writeFile(
       path.join(agentsRoot, DEFAULT_AGENT_ID, "config.json"),
-      JSON.stringify({ version: 1, name: "小助", enabled: false }),
+      JSON.stringify({ version: 1, name: "生活管家", enabled: false }),
       "utf8",
     );
     const view = await readAgentProfilesView("");

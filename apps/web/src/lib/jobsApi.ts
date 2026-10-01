@@ -173,6 +173,25 @@ export function listJobs(workspace: string): Promise<JobSpec[]> {
   return request<unknown>(jobsListPath(workspace)).then(normalizeJobs);
 }
 
+export interface JobOccurrence {
+  jobId: string;
+  name: string;
+  at: string;
+  kind: "once" | "periodic";
+}
+
+/** 任务在 [from, to] 区间内的发生时刻（日历主 tab 用） */
+export function listJobOccurrences(
+  workspace: string,
+  fromIso: string,
+  toIso: string
+): Promise<JobOccurrence[]> {
+  const params = new URLSearchParams({ path: workspace, from: fromIso, to: toIso });
+  return request<{ occurrences: JobOccurrence[] }>(
+    `/jobs/occurrences?${params.toString()}`
+  ).then((data) => data.occurrences ?? []);
+}
+
 /** 提交给后端的载荷：剥掉纯展示字段（lastRuns / nextRunAt / raw）。 */
 export function jobPayload(job: JobSpec): Record<string, unknown> {
   const payload: Record<string, unknown> = {

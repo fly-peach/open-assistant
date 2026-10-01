@@ -37,6 +37,8 @@ export interface AgentProfileEntry {
   issues?: string[];
   /** 是「当前工作区」正在用的那位吗 */
   active: boolean;
+  /** 是不是主智能体（生活管家；不可删除） */
+  main: boolean;
 }
 
 export interface AgentProfilesView {
@@ -67,6 +69,7 @@ export async function readAgentProfilesView(
     const entry: AgentProfileEntry = {
       id: summary.id,
       name: summary.name,
+      main: summary.main,
       // 镜像兜底：绑定说「这个目录归它」，但它的 config 里还没写上（老数据）
       // → 以绑定为准，否则界面会显示「未指定工作区」而实际上它正在用着
       workspaceDir:

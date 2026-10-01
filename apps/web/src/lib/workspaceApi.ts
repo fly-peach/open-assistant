@@ -97,6 +97,8 @@ export interface Todo {
   id: string;
   content: string;
   status: TodoStatus;
+  /** 计划完成时间（可选，ISO 时间）；日历视图按它排期 */
+  dueAt?: string;
   createdAt: string;
   updatedAt: string;
   source: TodoSource;

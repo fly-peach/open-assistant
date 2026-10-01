@@ -21,6 +21,8 @@ export interface Todo {
   id: string;
   content: string;
   status: TodoStatus;
+  /** 计划完成时间（可选，ISO 时间字符串）；日历视图按它排期 */
+  dueAt?: string;
   createdAt: string;
   updatedAt: string;
   source: TodoSource;
@@ -54,6 +56,12 @@ export function emptyTodoFile(now: string = new Date().toISOString()): TodoFile 
   return { version: 1, updatedAt: now, todos: [] };
 }
 
+function assertDueAt(value: unknown): asserts value is string {
+  if (!isIsoDateString(value)) {
+    throw new TodoStoreError("TODO_INVALID_INPUT", "dueAt 必须是有效的时间字符串");
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -68,6 +76,7 @@ export function normalizeTodo(raw: unknown, index: number): Todo {
     throw new TodoStoreError("TODO_INVALID_CONTENT", `todos[${index}] 不是对象`);
   }
   const { id, content, status, createdAt, updatedAt, source } = raw;
+  const dueAt = (raw as Record<string, unknown>)["dueAt"];
   if (typeof id !== "string" || id.length === 0) {
     throw new TodoStoreError("TODO_INVALID_CONTENT", `todos[${index}].id 缺失或非法`);
   }
@@ -89,6 +98,9 @@ export function normalizeTodo(raw: unknown, index: number): Todo {
       `todos[${index}].source 非法: ${JSON.stringify(source)}（仅允许 user / agent）`,
     );
   }
+  if (dueAt !== undefined && dueAt !== null && !isIsoDateString(dueAt)) {
+    throw new TodoStoreError("TODO_INVALID_CONTENT", `todos[${index}].dueAt 非法（应为时间字符串）`);
+  }
   return {
     id,
     content,
@@ -96,6 +108,7 @@ export function normalizeTodo(raw: unknown, index: number): Todo {
     createdAt,
     updatedAt,
     source: source as TodoSource,
+    ...(typeof dueAt === "string" && dueAt.length > 0 ? { dueAt } : {}),
   };
 }
 
@@ -274,7 +287,13 @@ function assertStatus(status: unknown): asserts status is TodoStatus {
  */
 export async function createTodo(
   workspaceDir: string,
-  input: { content: string; status?: TodoStatus; source?: TodoSource; id?: string },
+  input: {
+    content: string;
+    status?: TodoStatus;
+    source?: TodoSource;
+    id?: string;
+    dueAt?: string | null;
+  },
 ): Promise<{ todo: Todo; file: TodoFile; etag: string }> {
   assertContent(input.content);
   const status = input.status ?? "pending";
@@ -283,6 +302,7 @@ export async function createTodo(
   if (!(TODO_SOURCES as readonly string[]).includes(source)) {
     throw new TodoStoreError("TODO_INVALID_INPUT", `TODO 来源非法: ${JSON.stringify(source)}`);
   }
+  if (input.dueAt !== undefined && input.dueAt !== null) assertDueAt(input.dueAt);
   const filePath = workspaceTodosPath(workspaceDir);
   return withLock(filePath, async () => {
     const snapshot = await readTodos(workspaceDir);
@@ -294,6 +314,7 @@ export async function createTodo(
       createdAt: now,
       updatedAt: now,
       source,
+      ...(input.dueAt ? { dueAt: input.dueAt } : {}),
     };
     if (snapshot.file.todos.some((t) => t.id === todo.id)) {
       throw new TodoStoreError("TODO_INVALID_INPUT", `TODO id 已存在: ${todo.id}`);
@@ -315,16 +336,17 @@ export async function createTodo(
 export async function updateTodo(
   workspaceDir: string,
   id: string,
-  patch: { content?: string; status?: TodoStatus },
+  patch: { content?: string; status?: TodoStatus; dueAt?: string | null },
 ): Promise<{ todo: Todo; file: TodoFile; etag: string }> {
   if (typeof id !== "string" || id.length === 0) {
     throw new TodoStoreError("TODO_INVALID_INPUT", "缺少 TODO id");
   }
-  if (patch.content === undefined && patch.status === undefined) {
-    throw new TodoStoreError("TODO_INVALID_INPUT", "updateTodo 至少需要 content 或 status 之一");
+  if (patch.content === undefined && patch.status === undefined && patch.dueAt === undefined) {
+    throw new TodoStoreError("TODO_INVALID_INPUT", "updateTodo 至少需要 content / status / dueAt 之一");
   }
   if (patch.content !== undefined) assertContent(patch.content);
   if (patch.status !== undefined) assertStatus(patch.status);
+  if (patch.dueAt !== undefined && patch.dueAt !== null) assertDueAt(patch.dueAt);
 
   const filePath = workspaceTodosPath(workspaceDir);
   return withLock(filePath, async () => {
@@ -341,6 +363,8 @@ export async function updateTodo(
       status: patch.status ?? existing.status,
       updatedAt: now,
     };
+    if (patch.dueAt === null) delete updated.dueAt;
+    else if (patch.dueAt !== undefined) updated.dueAt = patch.dueAt;
     const todos = snapshot.file.todos.slice();
     todos[index] = updated;
     const next: TodoFile = { version: 1, updatedAt: now, todos };

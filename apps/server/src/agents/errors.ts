@@ -35,7 +35,9 @@ export type AgentErrorCode =
   /** agent 调用层数超过上限（防递归） */
   | "AGENT_CALL_DEPTH_EXCEEDED"
   /** 对端执行失败（网络 / 图运行异常） */
-  | "AGENT_CALL_FAILED";
+  | "AGENT_CALL_FAILED"
+  /** 主智能体不可删除 */
+  | "AGENT_MAIN_PROTECTED";
 
 export class AgentError extends Error {
   readonly code: AgentErrorCode;

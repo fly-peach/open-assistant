@@ -36,10 +36,15 @@ export const todoListTool = tool(
 );
 
 export const todoCreateTool = tool(
-  async ({ content, status }, runtime) => {
+  async ({ content, status, due }, runtime) => {
     try {
       const dir = await workspaceDirOf(runtime);
-      const { todo } = await createTodo(dir, { content, status, source: "agent" });
+      const { todo } = await createTodo(dir, {
+        content,
+        status,
+        source: "agent",
+        ...(due ? { dueAt: due } : {}),
+      });
       return JSON.stringify({ ok: true, todo }, null, 2);
     } catch (err) {
       return errorText(err);
@@ -48,24 +53,28 @@ export const todoCreateTool = tool(
   {
     name: "todo_create",
     description:
-      "在当前工作区新增一条待办，写入 todos.json。status 可省略，默认 pending（待办）。",
+      "在当前工作区新增一条待办，写入 todos.json。status 可省略，默认 pending（待办）；" +
+      "若这件事有明确的时间点，把 due 填上（ISO 时间），日历视图会按它排期。",
     schema: z.object({
       content: z.string().min(1).describe("待办内容"),
       status: z
         .enum(["pending", "in_progress", "completed"])
         .optional()
         .describe("状态：pending 待办 / in_progress 进行中 / completed 已完成"),
+      due: z.string().optional().describe("计划时间（ISO 时间字符串，如 2026-10-03T09:00:00+08:00）"),
     }),
   },
 );
 
 export const todoUpdateTool = tool(
-  async ({ id, content, status }, runtime) => {
+  async ({ id, content, status, due }, runtime) => {
     try {
       const dir = await workspaceDirOf(runtime);
       const { todo } = await updateTodo(dir, id, {
         ...(content !== undefined ? { content } : {}),
         ...(status !== undefined ? { status } : {}),
+        // due 传空串 = 清掉排期
+        ...(due !== undefined ? { dueAt: due.length > 0 ? due : null } : {}),
       });
       return JSON.stringify({ ok: true, todo }, null, 2);
     } catch (err) {
@@ -75,7 +84,7 @@ export const todoUpdateTool = tool(
   {
     name: "todo_update",
     description:
-      "更新某条待办的状态或内容（按 id），只影响目标条目。id 不存在会返回 ERROR [TODO_NOT_FOUND]。",
+      "更新某条待办的状态 / 内容 / 计划时间（按 id），只影响目标条目。id 不存在会返回 ERROR [TODO_NOT_FOUND]。",
     schema: z.object({
       id: z.string().min(1).describe("待办 id"),
       content: z.string().min(1).optional().describe("新的待办内容"),
@@ -83,6 +92,7 @@ export const todoUpdateTool = tool(
         .enum(["pending", "in_progress", "completed"])
         .optional()
         .describe("新状态：pending / in_progress / completed"),
+      due: z.string().optional().describe("新的计划时间（ISO 时间）；传空字符串表示清掉排期"),
     }),
   },
 );

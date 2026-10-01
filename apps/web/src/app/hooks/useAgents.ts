@@ -21,7 +21,7 @@ import {
   type AgentSummary,
   type AgentsRoot,
 } from "@/lib/agentsApi";
-import { listJobs, type JobSpec } from "@/lib/jobsApi";
+import { listJobOccurrences, listJobs, type JobOccurrence, type JobSpec } from "@/lib/jobsApi";
 import { getTeam, type TeamView } from "@/lib/teamApi";
 import { deriveBindingState, type BindingView } from "@/app/utils/agentConfig";
 
@@ -77,6 +77,20 @@ export function useJobs(workspace: string | null) {
   return useSWR<JobSpec[]>(
     workspace ? `/jobs?path=${workspace}` : null,
     () => listJobs(workspace as string)
+  );
+}
+
+/** 任务在 [from, to] 区间内的发生时刻（日历用） */
+export function useJobOccurrences(
+  workspace: string | null,
+  fromIso: string | null,
+  toIso: string | null
+) {
+  return useSWR<JobOccurrence[]>(
+    workspace && fromIso && toIso
+      ? `/jobs/occurrences?path=${workspace}&from=${fromIso}&to=${toIso}`
+      : null,
+    () => listJobOccurrences(workspace as string, fromIso as string, toIso as string)
   );
 }
 

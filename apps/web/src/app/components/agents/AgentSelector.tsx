@@ -40,8 +40,8 @@ const STATUS_COLOR: Record<AgentProfileEntry["startupStatus"], string> = {
   failed: "var(--color-error)",
 };
 
-function isDefaultAgent(id: string): boolean {
-  return id === "xiaozhu";
+function isMainAgent(entry: AgentProfileEntry): boolean {
+  return entry.main;
 }
 
 /** 停用优先于运行状态（对齐 QwenPaw 的 `status ?? (enabled ? pending : disabled)`） */
@@ -110,15 +110,15 @@ export function AgentSelector({
   const active = agents.find((a) => a.active);
   const enabledAgents = agents.filter((a) => a.enabled);
   const pinnedGroup = useMemo(
-    () => agents.filter((a) => isDefaultAgent(a.id) || a.pinned),
+    () => agents.filter((a) => isMainAgent(a) || a.pinned),
     [agents],
   );
   const regularGroup = useMemo(
-    () => agents.filter((a) => a.enabled && !isDefaultAgent(a.id) && !a.pinned),
+    () => agents.filter((a) => a.enabled && !isMainAgent(a) && !a.pinned),
     [agents],
   );
   const disabledGroup = useMemo(
-    () => agents.filter((a) => !a.enabled && !isDefaultAgent(a.id) && !a.pinned),
+    () => agents.filter((a) => !a.enabled && !isMainAgent(a) && !a.pinned),
     [agents],
   );
 
@@ -166,7 +166,7 @@ export function AgentSelector({
 
   const togglePin = useCallback(
     (entry: AgentProfileEntry) => {
-      if (isDefaultAgent(entry.id)) return;
+      if (isMainAgent(entry)) return;
       void act(() => setAgentPinned(entry.id, !entry.pinned));
     },
     [act],
@@ -210,7 +210,7 @@ export function AgentSelector({
         }`}
         onClick={() => selectAgent(entry)}
         title={
-          isDefaultAgent(entry.id)
+          isMainAgent(entry)
             ? zh.agentSelector.defaultPinned
             : entry.pinned
               ? zh.agentSelector.longPressToUnpin
@@ -229,7 +229,7 @@ export function AgentSelector({
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1">
             <span className="truncate text-sm">{entry.name}</span>
-            {(isDefaultAgent(entry.id) || entry.pinned) && (
+            {(isMainAgent(entry) || entry.pinned) && (
               <Pin size={11} className="shrink-0 text-muted-foreground" aria-label={zh.agentSelector.pinned} />
             )}
             {entry.active && <Check size={13} className="shrink-0 text-[var(--color-success)]" aria-hidden />}
@@ -260,7 +260,7 @@ export function AgentSelector({
             {` · ${t(zh.agentSelector.idLine, { id: entry.id })}`}
           </span>
         </span>
-        {!isDefaultAgent(entry.id) && (
+        {!isMainAgent(entry) && (
           <button
             type="button"
             data-agent-toggle={entry.id}

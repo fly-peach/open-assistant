@@ -9,14 +9,14 @@
  */
 import Link from "next/link";
 import { useCallback, useState } from "react";
-import { AlertTriangle, Bot, Loader2, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, Bot, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import zh, { t } from "@/i18n/zh";
-import { createAgent, type AgentSummary } from "@/lib/agentsApi";
+import { createAgent, deleteAgent, type AgentSummary } from "@/lib/agentsApi";
 import { findModel, type ModelsOverview } from "@/lib/modelsApi";
 import { useAgents } from "@/app/hooks/useAgents";
 import { useModelsOverview } from "@/app/hooks/useModels";
@@ -109,6 +109,24 @@ export default function AgentsPage() {
   );
 
   const agents = data ? sortAgents(data.agents) : [];
+
+  /** 删除一个智能体（主智能体不可删；后端会再拦一次） */
+  const removeAgent = useCallback(
+    async (agent: AgentSummary) => {
+      if (agent.main) return;
+      if (typeof window !== "undefined" && !window.confirm(t(zh.agents.deleteConfirm, { name: agent.name, id: agent.id }))) {
+        return;
+      }
+      try {
+        await deleteAgent(agent.id);
+        toast.success(t(zh.agents.deleteDone, { name: agent.name }));
+        await mutate();
+      } catch (err) {
+        toast.error(t(zh.agents.deleteFailed, { error: messageOf(err) }));
+      }
+    },
+    [mutate]
+  );
 
   return (
     <div
@@ -257,6 +275,14 @@ export default function AgentsPage() {
                     {agent.name}
                   </Link>
                   <code className="text-xs text-muted-foreground">{agent.id}</code>
+                  {agent.main && (
+                    <span
+                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                      data-agent-main-badge
+                    >
+                      {zh.agents.mainBadge}
+                    </span>
+                  )}
                   {!agent.valid && (
                     <span
                       className="inline-flex items-center gap-1 rounded border border-[var(--color-warning)] px-1.5 py-0.5 text-[11px] text-[var(--color-warning)]"
@@ -276,6 +302,17 @@ export default function AgentsPage() {
                   >
                     {zh.agents.open}
                   </Link>
+                  <button
+                    type="button"
+                    onClick={() => void removeAgent(agent)}
+                    disabled={agent.main}
+                    aria-label={agent.main ? zh.agents.mainProtected : zh.agents.deleteAction}
+                    title={agent.main ? zh.agents.mainProtected : zh.agents.deleteAction}
+                    data-agent-delete={agent.id}
+                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
                 {agent.description && (
                   <p className="mt-1 text-xs text-muted-foreground">{agent.description}</p>

@@ -41,6 +41,8 @@ export interface AgentSummary {
   model?: AgentModelSummary | null;
   valid: boolean;
   issues?: string[];
+  /** 是否是主智能体（生活管家；不可删除） */
+  main: boolean;
 }
 
 export interface AgentsRoot {
@@ -143,6 +145,7 @@ function normalizeSummary(raw: unknown): AgentSummary | null {
     description: asString(record.description),
     valid: record.valid !== false,
     issues: asStringList(record.issues),
+    main: record.main === true,
   };
   const model = normalizeSummaryModel(record.model);
   if (model !== undefined) summary.model = model;

@@ -145,8 +145,8 @@ describe("展示工具（5.6 / 5.7）", () => {
 
   test("列表排序稳定（按标识）", () => {
     const sorted = sortAgents([
-      { id: "b", name: "B", valid: true },
-      { id: "a", name: "A", valid: false, issues: ["缺人设"] },
+      { id: "b", name: "B", valid: true, main: false },
+      { id: "a", name: "A", valid: false, issues: ["缺人设"], main: false },
     ]);
     expect(sorted.map((item) => item.id)).toEqual(["a", "b"]);
   });

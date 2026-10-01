@@ -4,6 +4,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
   AlertTriangle,
+  Calendar,
   Check,
   CheckCircle2,
   Circle,
@@ -30,6 +31,7 @@ import {
 } from "@/app/utils/todoGrouping";
 import zh, { t } from "@/i18n/zh";
 import { cn } from "@/lib/utils";
+import { isoToLocalInput, localInputToIso } from "@/app/utils/datetime";
 
 const STATUS_CLASS: Record<TodoStatus, string> = {
   pending: "text-[var(--color-text-tertiary)]",
@@ -84,6 +86,8 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
   const [newContent, setNewContent] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
+  const [editingDue, setEditingDue] = useState("");
+  const [newDue, setNewDue] = useState("");
 
   const todos = useMemo(() => data?.file.todos ?? [], [data]);
   const groups = useMemo(() => groupTodos(todos), [todos]);
@@ -142,11 +146,13 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
   const startEdit = useCallback((todo: Todo) => {
     setEditingId(todo.id);
     setEditingContent(todo.content);
+    setEditingDue(isoToLocalInput(todo.dueAt));
   }, []);
 
   const cancelEdit = useCallback(() => {
     setEditingId(null);
     setEditingContent("");
+    setEditingDue("");
   }, []);
 
   const saveEdit = useCallback(() => {
@@ -156,15 +162,19 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
       toast.error(zh.todos.contentEmpty);
       return;
     }
-    const next = todos.map((item) =>
-      item.id === editingId
-        ? { ...item, content, updatedAt: new Date().toISOString() }
-        : item
-    );
+    const dueIso = localInputToIso(editingDue);
+    const next = todos.map((item) => {
+      if (item.id !== editingId) return item;
+      const updated: Todo = { ...item, content, updatedAt: new Date().toISOString() };
+      if (dueIso) updated.dueAt = dueIso;
+      else delete updated.dueAt;
+      return updated;
+    });
     setEditingId(null);
     setEditingContent("");
+    setEditingDue("");
     void persist(next);
-  }, [editingId, editingContent, todos, persist]);
+  }, [editingId, editingContent, editingDue, todos, persist]);
 
   const removeTodo = useCallback(
     (todo: Todo) => {
@@ -177,6 +187,7 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
     const content = newContent.trim();
     if (!content) return;
     const now = new Date().toISOString();
+    const dueIso = localInputToIso(newDue);
     const todo: Todo = {
       id:
         typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -187,10 +198,12 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
       createdAt: now,
       updatedAt: now,
       source: "user",
+      ...(dueIso ? { dueAt: dueIso } : {}),
     };
     setNewContent("");
+    setNewDue("");
     void persist([...todos, todo]);
-  }, [newContent, todos, persist]);
+  }, [newContent, newDue, todos, persist]);
 
   if (error) {
     return (
@@ -286,6 +299,15 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
                             rows={2}
                             className="w-full resize-none rounded border border-border bg-background px-2 py-1 text-sm"
                           />
+                          <input
+                            type="datetime-local"
+                            value={editingDue}
+                            onChange={(event) => setEditingDue(event.target.value)}
+                            aria-label={zh.todos.due}
+                            title={zh.todos.dueHint}
+                            data-todo-due-input
+                            className="w-fit rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
                           <div className="flex gap-1">
                             <button
                               type="button"
@@ -327,6 +349,15 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
                             {" · "}
                             {formatTime(todo.updatedAt)}
                           </p>
+                          {todo.dueAt && (
+                            <p
+                              className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--color-text-secondary)]"
+                              data-todo-due
+                            >
+                              <Calendar size={11} />
+                              {zh.todos.due}：{new Date(todo.dueAt).toLocaleString()}
+                            </p>
+                          )}
                         </div>
                       )}
 
@@ -375,6 +406,15 @@ export function TodoView({ workspacePath, revision, onChanged }: TodoViewProps) 
           }}
           placeholder={zh.todos.addPlaceholder}
           className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+        />
+        <input
+          type="datetime-local"
+          value={newDue}
+          onChange={(event) => setNewDue(event.target.value)}
+          aria-label={zh.todos.due}
+          title={zh.todos.dueHint}
+          data-todo-new-due
+          className="shrink-0 rounded border border-border bg-background px-2 py-1.5 text-xs"
         />
         <button
           type="button"
