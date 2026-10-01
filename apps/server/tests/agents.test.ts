@@ -491,19 +491,15 @@ describe("1.9 工作区绑定记录", () => {
 
     const file = workspaceProjectPath(ws);
     expect(file).toBe(path.join(workspaceAppDataDir(ws), "project.json"));
-    // v2：成员表 + 激活位（不再是单个 agentId）
+    // 1:1：一条记录只写一位 agent（agent ↔ 工作区 1:1）
     const raw = JSON.parse(await fs.readFile(file, "utf8")) as {
       version: number;
-      activeAgentId: string;
-      agents: { agentId: string; enabled: boolean }[];
+      agentId: string;
       createdAt: string;
     };
     expect(raw.version).toBe(2);
-    expect(raw.activeAgentId).toBe("writer");
+    expect(raw.agentId).toBe("writer");
     expect(typeof raw.createdAt).toBe("string");
-    // 默认 agent 必须也在成员表里（保证始终有一个可用的兜底）
-    expect(raw.agents.map((r) => r.agentId).sort()).toEqual(["writer", DEFAULT_AGENT_ID].sort());
-    expect(raw.agents.every((r) => r.enabled)).toBe(true);
 
     const view = await app.request(`/workspace/binding?path=${encodeURIComponent(ws)}`);
     const body = (await view.json()) as { agentId: string | null; agentName?: string };
@@ -594,9 +590,7 @@ describe("1.11 换绑：keep / archive 与换绑痕迹", () => {
     expect(owners["t-2"]).toBe("writer");
 
     const binding = await readBinding(ws);
-    expect(binding?.activeAgentId).toBe("memo");
-    // 换绑不改成员表：writer 仍在工作区里（只是不再是激活位）
-    expect(binding?.agents.map((r) => r.agentId)).toContain("writer");
+    expect(binding?.agentId).toBe("memo");
     expect(binding?.lastAgentSwitch?.from).toBe("writer");
     expect(binding?.lastAgentSwitch?.mode).toBe("keep");
   });

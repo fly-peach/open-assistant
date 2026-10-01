@@ -32,6 +32,7 @@ import { useModelsOverview } from "@/app/hooks/useModels";
 import { groupModelsByProvider } from "@/app/components/models/ModelPicker";
 import { VisionBadge } from "@/app/components/models/VisionBadge";
 import { ChannelSection } from "@/app/components/channels/ChannelSection";
+import { AgentWorkspaceSection } from "@/app/components/agents/AgentWorkspaceSection";
 import {
   APPROVAL_LEVELS,
   approvalOptions,
@@ -360,6 +361,9 @@ export default function AgentConfigPage() {
               </Button>
             </div>
           </section>
+
+          {/* 工作区归属（1:1）：一个 agent 维护一个本机目录，所以配置跟人设/模型同页 */}
+          <AgentWorkspaceSection agentId={data.id} />
 
           {/* 频道（design D13）：频道归属 agent 定义，所以配置放在这一页而不是工作区页 */}
           <ChannelSection agentId={data.id} />

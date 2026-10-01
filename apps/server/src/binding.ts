@@ -1,35 +1,27 @@
 /**
- * 工作区 ↔ agent 绑定。
+ * 工作区 ↔ agent 绑定（**1:1**）。
  *
- * ## 模型（2026-10-01 从 1:1 放宽成 N:1，对齐 QwenPaw）
+ * ## 模型（照 QwenPaw 的 `AgentProfileRef { id, workspace_dir, enabled, pinned }`）
  *
- * 一个工作区可以挂**多个** agent，其中一个是**当前激活**的（聊天面用的那个）。
- * 对应 QwenPaw 的 PawApp.agents（`AgentProfileRef { id, workspace_dir, enabled }`）+ 一个选中项。
+ * **一个工作区只由一位 agent 维护；一位 agent 也只维护一个工作区。**
+ * 绑定记录写在 `<工作区>/.open-assistant/project.json`，绑定随工作区目录走
+ * （复制目录 = 复制绑定，无需重新配置）。
  *
- * 绑定记录写在 `<工作区>/.open-assistant/project.json`（version 2）。
- * 绑定随工作区目录走（复制目录 = 复制绑定，无需重新配置）。
- *
- * ## 两条不变式
- *
- * 1. **默认 agent 永远是成员且永远启用** —— 它保证任何工作区都至少有一个能用的 agent，
- *    所以它不能被停用 / 移除（对齐 QwenPaw 里 `default` 不渲染开关按钮）。
- * 2. **停用或移除当前激活的 agent 时，激活位自动回落到默认 agent**（不留下悬空的激活位）。
- *
- * ## 归属
- *
- * - `enabled` 是**这个工作区对这个 agent** 的态度（同一个 agent 可以在 A 工作区启用、在 B 工作区停用）；
- * - `pinned` 是 **agent 自己的**全局偏好，所以它在 `agents/<id>/config.json` 里，不在这儿。
+ * 那条「一个 agent 只维护一个目录」的另一半，由 agent 自己的
+ * `config.json.workspaceDir` 承载并在写入时校验（见 agents/registry.ts 的
+ * `setAgentWorkspaceDir` / `findAgentByWorkspaceDir`）—— 两份记录互为镜像，
+ * 这里负责「目录 → agent」，那边负责「agent → 目录」。
  *
  * ## 换绑（显式且可追溯）
  *
- * - 记录 `lastAgentSwitch`（此前激活的是谁、何时、为什么、用的哪种历史处置）；
+ * - 记录 `lastAgentSwitch`（此前绑的是谁、何时、为什么、用的哪种历史处置）；
  * - `mode: "keep"`（默认）：保留原有会话，并把它们标注为「创建时属于前一个 agent」；
  * - `mode: "archive"`：把原有会话整体转入 `<工作区>/.open-assistant/archive/<old-agent>/`（仍可查看）。
  *
- * ## 运行身份以激活位为准
+ * ## 运行身份以绑定为准
  *
- * 客户端 run 里传的 `configurable.agent_id` 一律不采信；运行期身份只能来自这里的激活位
- * （见 workspace-middleware.ts）。激活位是权限边界：它决定用谁的工具白名单。
+ * 客户端 run 里传的 `configurable.agent_id` 一律不采信；运行期身份只能来自这里的绑定
+ * （见 workspace-middleware.ts）。绑定是权限边界：它决定用谁的工具白名单。
  */
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -44,6 +36,10 @@ import {
   type AgentStartupStatus,
 } from "./agents/registry.js";
 import { DEFAULT_AGENT_ID, DEFAULT_AGENT_NAME } from "./agents/root.js";
+import {
+  claimWorkspaceDir,
+  releaseWorkspaceDir,
+} from "./agents/registry.js";
 import { readJsonOrNull, statOrNull, writeJsonAtomic } from "./agents/json-file.js";
 import {
   ensureAppDataDir,
@@ -70,20 +66,10 @@ export interface AgentSwitchRecord {
   mode: SwitchMode;
 }
 
-/** 工作区里挂着的某个 agent（QwenPaw: AgentProfileRef） */
-export interface WorkspaceAgentRef {
-  agentId: string;
-  /** 是否在**这个工作区**里启用 */
-  enabled: boolean;
-  addedAt: string;
-}
-
 export interface WorkspaceBinding {
   version: 2;
-  /** 这个工作区挂着的全部 agent（含停用的） */
-  agents: WorkspaceAgentRef[];
-  /** 聊天面当前用的那个；必须是 `agents` 里的一员且 enabled */
-  activeAgentId: string;
+  /** 维护这个工作区的那位 agent（有且仅有一位） */
+  agentId: string;
   createdAt: string;
   lastAgentSwitch?: AgentSwitchRecord;
 }
@@ -93,6 +79,12 @@ export function workspaceProjectPath(workspaceDir: string): string {
   return path.join(workspaceAppDataDir(workspaceDir), PROJECT_FILE);
 }
 
+/**
+ * 归一化绑定记录，容忍三种历史写法（都是「目录 → agent」的同一个事实）：
+ * - `{ agentId }`            —— 一直以来的 1:1 写法
+ * - `{ activeAgentId }`      —— 2026-10-01 那次 N:1 试验的错误写法，取它的激活位
+ * - `{ agents: [...], activeAgentId }` —— 同上，激活位缺失时取第一个
+ */
 function normalizeBinding(raw: unknown): WorkspaceBinding | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
@@ -101,12 +93,24 @@ function normalizeBinding(raw: unknown): WorkspaceBinding | null {
       ? obj["createdAt"]
       : new Date().toISOString();
 
-  let last: AgentSwitchRecord | undefined;
+  const asId = (value: unknown): string | null =>
+    typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+
+  let agentId = asId(obj["agentId"]) ?? asId(obj["activeAgentId"]);
+  if (!agentId && Array.isArray(obj["agents"])) {
+    const first = (obj["agents"] as unknown[]).find(
+      (entry) => typeof entry === "object" && entry !== null && !Array.isArray(entry),
+    );
+    if (first) agentId = asId((first as Record<string, unknown>)["agentId"]);
+  }
+  if (!agentId) return null;
+
+  const binding: WorkspaceBinding = { version: 2, agentId, createdAt };
   const rawLast = obj["lastAgentSwitch"];
   if (typeof rawLast === "object" && rawLast !== null && !Array.isArray(rawLast)) {
     const rec = rawLast as Record<string, unknown>;
     if (typeof rec["from"] === "string" && rec["from"].length > 0) {
-      last = {
+      binding.lastAgentSwitch = {
         from: rec["from"],
         at: typeof rec["at"] === "string" ? rec["at"] : new Date().toISOString(),
         reason: typeof rec["reason"] === "string" ? rec["reason"] : "user",
@@ -114,48 +118,6 @@ function normalizeBinding(raw: unknown): WorkspaceBinding | null {
       };
     }
   }
-
-  const readRefs = (value: unknown): WorkspaceAgentRef[] => {
-    if (!Array.isArray(value)) return [];
-    const refs: WorkspaceAgentRef[] = [];
-    for (const entry of value) {
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-      const rec = entry as Record<string, unknown>;
-      const agentId = rec["agentId"];
-      if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
-      const id = agentId.trim();
-      if (refs.some((r) => r.agentId === id)) continue; // 去重
-      refs.push({
-        agentId: id,
-        enabled: rec["enabled"] !== false,
-        addedAt: typeof rec["addedAt"] === "string" ? rec["addedAt"] : createdAt,
-      });
-    }
-    return refs;
-  };
-
-  let agents = readRefs(obj["agents"]);
-  // v1 兼容：老记录只有单个 agentId
-  if (agents.length === 0) {
-    const legacy = obj["agentId"];
-    if (typeof legacy !== "string" || legacy.trim().length === 0) return null;
-    agents = [{ agentId: legacy.trim(), enabled: true, addedAt: createdAt }];
-  }
-
-  // 不变式 1：默认 agent 必须是成员且启用
-  const def = agents.find((r) => r.agentId === DEFAULT_AGENT_ID);
-  if (def) def.enabled = true;
-  else agents.unshift({ agentId: DEFAULT_AGENT_ID, enabled: true, addedAt: createdAt });
-
-  // 不变式 2：激活位必须有效（存在且启用），否则回落默认 agent
-  const rawActive = obj["activeAgentId"] ?? obj["agentId"];
-  let activeAgentId =
-    typeof rawActive === "string" && rawActive.trim().length > 0 ? rawActive.trim() : "";
-  const activeRef = agents.find((r) => r.agentId === activeAgentId);
-  if (!activeRef || !activeRef.enabled) activeAgentId = DEFAULT_AGENT_ID;
-
-  const binding: WorkspaceBinding = { version: 2, agents, activeAgentId, createdAt };
-  if (last) binding.lastAgentSwitch = last;
   return binding;
 }
 
@@ -296,7 +258,7 @@ export interface WriteBindingOptions {
 
 export interface WriteBindingResult {
   binding: WorkspaceBinding;
-  /** 本次是否发生了「激活位」变更（切到了别的 agent） */
+  /** 本次是否发生了换绑（从别的 agent 切过来） */
   switched: boolean;
   /** keep 模式下被保留并标注的会话标识 */
   keptSessions?: string[];
@@ -304,63 +266,11 @@ export interface WriteBindingResult {
   archivedSessions?: string[];
 }
 
-/** 把 agent 加进成员表（幂等）；返回是否真的新加了 */
-function ensureRef(binding: WorkspaceBinding, agentId: string, enabled = true): boolean {
-  if (binding.agents.some((r) => r.agentId === agentId)) return false;
-  binding.agents.push({ agentId, enabled, addedAt: new Date().toISOString() });
-  return true;
-}
-
-/** 停用某个成员；停用当前激活的 → 激活位回落默认 agent（不变式 2） */
-function disableRef(binding: WorkspaceBinding, ref: WorkspaceAgentRef): void {
-  if (ref.agentId === DEFAULT_AGENT_ID) {
-    throw new AgentError(
-      "AGENT_INVALID_CONFIG",
-      `默认 agent（${DEFAULT_AGENT_ID}）不能停用：它保证工作区始终有一个可用的助手`,
-      400,
-      "agentId",
-    );
-  }
-  ref.enabled = false;
-  if (binding.activeAgentId === ref.agentId) binding.activeAgentId = DEFAULT_AGENT_ID;
-}
-
-function assertAgentId(agentId: string): void {
-  if (!isValidAgentId(agentId)) {
-    throw new AgentError("AGENT_INVALID_ID", `agent 标识非法：${String(agentId)}`, 400, "agentId");
-  }
-}
-
-async function assertAgentExists(agentId: string): Promise<void> {
-  assertAgentId(agentId);
-  if (!(await agentExists(agentId))) {
-    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义 ${agentId}`, 404, "agentId");
-  }
-}
-
-async function loadOrInit(workspaceDir: string): Promise<WorkspaceBinding> {
-  const existing = await readBinding(workspaceDir);
-  if (existing) return existing;
-  const now = new Date().toISOString();
-  return {
-    version: 2,
-    agents: [{ agentId: DEFAULT_AGENT_ID, enabled: true, addedAt: now }],
-    activeAgentId: DEFAULT_AGENT_ID,
-    createdAt: now,
-  };
-}
-
-async function save(workspaceDir: string, binding: WorkspaceBinding): Promise<WorkspaceBinding> {
-  await ensureAppDataDir(workspaceDir);
-  await writeJsonAtomic(workspaceProjectPath(workspaceDir), binding);
-  return binding;
-}
-
 /**
- * 写入 / 更新工作区绑定：**把该 agent 设为当前激活**（并确保它是成员）。
- * - 未绑定 → 新建（成员表 = 默认 agent + 这个 agent）；
- * - 已激活同一个 agent → 幂等；
- * - 激活的是另一个 agent → 记 lastAgentSwitch + 按 mode 处置历史会话。
+ * 写入 / 更新工作区绑定。
+ * - 未绑定 → 新建绑定（createdAt = now）；
+ * - 已绑定同一个 agent → 幂等，不算换绑；
+ * - 已绑定另一个 agent → 换绑：记 lastAgentSwitch + 按 mode 处置历史会话。
  */
 export async function writeBinding(
   workspacePath: string,
@@ -387,227 +297,55 @@ export async function writeBinding(
   const now = new Date().toISOString();
 
   if (!existing) {
-    const binding: WorkspaceBinding = {
-      version: 2,
-      agents: [
-        { agentId: DEFAULT_AGENT_ID, enabled: true, addedAt: now },
-        ...(id === DEFAULT_AGENT_ID ? [] : [{ agentId: id, enabled: true, addedAt: now }]),
-      ],
-      activeAgentId: id,
-      createdAt: now,
-    };
+    const binding: WorkspaceBinding = { version: 2, agentId: id, createdAt: now };
     await ensureAppDataDir(workspaceDir);
     await writeJsonAtomic(workspaceProjectPath(workspaceDir), binding);
+    await claimWorkspaceDir(id, workspaceDir);
     return { binding, switched: false };
   }
 
-  const next: WorkspaceBinding = {
-    version: 2,
-    agents: existing.agents.map((r) => ({ ...r })),
-    activeAgentId: existing.activeAgentId,
-    createdAt: existing.createdAt,
-    ...(existing.lastAgentSwitch ? { lastAgentSwitch: existing.lastAgentSwitch } : {}),
-  };
-  ensureRef(next, id);
-  // 重新激活一个被停用的 agent → 顺带启用它（否则激活位会立刻被判为无效）
-  const ref = next.agents.find((r) => r.agentId === id)!;
-  ref.enabled = true;
-
-  if (existing.activeAgentId === id) {
-    await writeJsonAtomic(workspaceProjectPath(workspaceDir), next);
-    return { binding: next, switched: false };
+  if (existing.agentId === id) {
+    // 幂等：同一个 agent 重复绑定不该记成一次「换绑」
+    await writeJsonAtomic(workspaceProjectPath(workspaceDir), existing);
+    // 老数据可能只有绑定、没有镜像：顺手追平
+    await claimWorkspaceDir(id, workspaceDir);
+    return { binding: existing, switched: false };
   }
 
-  const from = existing.activeAgentId;
-  let result: WriteBindingResult;
+  // 换绑：1:1 下「把目录交给另一个 agent」= 前一位交出这个目录。
+  // 前一位的 config.json.workspaceDir 也要跟着清掉，否则它还会声称在维护这个目录，
+  // 下次别人想绑就会被「已由 X 维护」拦下（两份镜像记录必须同时更新）。
+  const from = existing.agentId;
+  // 1:1 的两份镜像记录必须同时更新：旧 agent 交出这个目录，新 agent 认领它。
+  // 少了这一步，旧 agent 会一直声称在维护这个目录，下次别人想绑就被「已由 X 维护」拦下。
+  await releaseWorkspaceDir(from, workspaceDir);
   if (mode === "archive") {
     const archived = await archiveSessions(workspaceDir, from);
-    result = { binding: next, switched: true, archivedSessions: archived };
-  } else {
-    const kept = await annotateExistingSessions(workspaceDir, from);
-    result = { binding: next, switched: true, keptSessions: kept };
-  }
-  result.binding.activeAgentId = id;
-  result.binding.lastAgentSwitch = { from, at: now, reason: options.reason ?? "user", mode };
-  await writeJsonAtomic(workspaceProjectPath(workspaceDir), result.binding);
-  return result;
-}
-
-// —— 小步操作（选择器用：加成员 / 启用停用 / 切激活 / 移除）——
-
-/** 把一个 agent 加进工作区（幂等）；`makeActive` 时同时切过去 */
-export async function addWorkspaceAgent(
-  workspacePath: string,
-  agentId: string,
-  opts: { enabled?: boolean; makeActive?: boolean } = {},
-): Promise<WorkspaceBinding> {
-  await assertAgentExists(agentId);
-  const workspaceDir = await resolveWorkspaceDir(workspacePath);
-  const binding = await loadOrInit(workspaceDir);
-  const fresh = ensureRef(binding, agentId, opts.enabled !== false);
-  if (!fresh && opts.enabled !== undefined) {
-    const ref = binding.agents.find((r) => r.agentId === agentId)!;
-    if (opts.enabled === false) disableRef(binding, ref);
-    else ref.enabled = true;
-  }
-  if (opts.makeActive) binding.activeAgentId = agentId;
-  return save(workspaceDir, binding);
-}
-
-export async function setWorkspaceAgentEnabled(
-  workspacePath: string,
-  agentId: string,
-  enabled: boolean,
-): Promise<WorkspaceBinding> {
-  assertAgentId(agentId);
-  const workspaceDir = await resolveWorkspaceDir(workspacePath);
-  const binding = await loadOrInit(workspaceDir);
-  const ref = binding.agents.find((r) => r.agentId === agentId);
-  if (!ref) {
-    if (!enabled) {
-      // 停用一个本来就不在的成员 = 什么都不用做
-      return save(workspaceDir, binding);
-    }
-    await assertAgentExists(agentId);
-    ensureRef(binding, agentId, true);
-    return save(workspaceDir, binding);
-  }
-  if (enabled) ref.enabled = true;
-  else disableRef(binding, ref);
-  return save(workspaceDir, binding);
-}
-
-/** 切换当前激活的 agent；必须是「已启用」的成员 */
-export async function setActiveAgent(
-  workspacePath: string,
-  agentId: string,
-): Promise<WorkspaceBinding> {
-  assertAgentId(agentId);
-  const workspaceDir = await resolveWorkspaceDir(workspacePath);
-  const binding = await loadOrInit(workspaceDir);
-  const ref = binding.agents.find((r) => r.agentId === agentId);
-  if (!ref) {
-    throw new AgentError(
-      "AGENT_NOT_FOUND",
-      `这个工作区里没有 ${agentId}：先把它加进来再切`,
-      404,
-      "agentId",
-    );
-  }
-  if (!ref.enabled) {
-    throw new AgentError(
-      "AGENT_INVALID_CONFIG",
-      `${agentId} 在这个工作区里是停用状态，不能切过去（先启用它）`,
-      400,
-      "agentId",
-    );
-  }
-  binding.activeAgentId = agentId;
-  return save(workspaceDir, binding);
-}
-
-/** 从工作区移除一个成员；移除当前激活的 → 激活位回落默认 agent */
-export async function removeWorkspaceAgent(
-  workspacePath: string,
-  agentId: string,
-): Promise<WorkspaceBinding> {
-  assertAgentId(agentId);
-  if (agentId === DEFAULT_AGENT_ID) {
-    throw new AgentError(
-      "AGENT_INVALID_CONFIG",
-      `默认 agent（${DEFAULT_AGENT_ID}）不能从工作区移除`,
-      400,
-      "agentId",
-    );
-  }
-  const workspaceDir = await resolveWorkspaceDir(workspacePath);
-  const binding = await loadOrInit(workspaceDir);
-  binding.agents = binding.agents.filter((r) => r.agentId !== agentId);
-  if (binding.activeAgentId === agentId) binding.activeAgentId = DEFAULT_AGENT_ID;
-  return save(workspaceDir, binding);
-}
-
-/** 选择器用的条目 */
-export interface WorkspaceAgentEntry {
-  id: string;
-  name: string;
-  description?: string;
-  /** 在这个工作区里启用了吗 */
-  enabled: boolean;
-  /** 是当前激活的那个吗 */
-  active: boolean;
-  // —— 以下来自 agent 自己的定义（全局）——
-  pinned: boolean;
-  availableInChat: boolean;
-  startupStatus: AgentStartupStatus;
-  valid: boolean;
-  issues?: string[];
-}
-
-export interface WorkspaceAgentsView {
-  workspace: string;
-  activeAgentId: string;
-  /** 这个工作区挂着的（含停用的） */
-  members: WorkspaceAgentEntry[];
-  /** 没挂上但可以加的 */
-  candidates: WorkspaceAgentEntry[];
-}
-
-/** 汇总选择器需要的一切：工作区成员 + 候选，字段直接来自 agent 定义 */
-export async function readWorkspaceAgentsView(
-  workspacePath: string,
-): Promise<WorkspaceAgentsView> {
-  const workspaceDir = await resolveWorkspaceDir(workspacePath);
-  const binding = await readBinding(workspaceDir);
-  const { agents } = await listAgents();
-  const byId = new Map(agents.map((a) => [a.id, a]));
-
-  const toEntry = (id: string, enabled: boolean, active: boolean): WorkspaceAgentEntry => {
-    const summary = byId.get(id);
-    if (!summary) {
-      // 定义已被删除，但工作区成员表里还留着 → 如实标成不可用，而不是假装它没问题
-      return {
-        id,
-        name: id,
-        enabled,
-        active,
-        pinned: false,
-        availableInChat: false,
-        startupStatus: "failed",
-        valid: false,
-        issues: ["agent 定义不存在（可能已被删除）"],
-      };
-    }
-    const entry: WorkspaceAgentEntry = {
-      id: summary.id,
-      name: summary.name,
-      enabled,
-      active,
-      pinned: summary.pinned,
-      availableInChat: summary.availableInChat,
-      startupStatus: summary.valid ? "running" : "failed",
-      valid: summary.valid,
+    const binding: WorkspaceBinding = {
+      version: 2,
+      agentId: id,
+      createdAt: existing.createdAt,
+      lastAgentSwitch: { from, at: now, reason: options.reason ?? "user", mode },
     };
-    if (summary.description !== undefined) entry.description = summary.description;
-    if (summary.issues !== undefined) entry.issues = summary.issues;
-    return entry;
+    await writeJsonAtomic(workspaceProjectPath(workspaceDir), binding);
+    await claimWorkspaceDir(id, workspaceDir);
+    return { binding, switched: true, archivedSessions: archived };
+  }
+  const kept = await annotateExistingSessions(workspaceDir, from);
+  const binding: WorkspaceBinding = {
+    version: 2,
+    agentId: id,
+    createdAt: existing.createdAt,
+    lastAgentSwitch: { from, at: now, reason: options.reason ?? "user", mode },
   };
-
-  const activeAgentId = binding?.activeAgentId ?? DEFAULT_AGENT_ID;
-  const members = (binding?.agents ?? []).map((r) =>
-    toEntry(r.agentId, r.enabled, r.agentId === activeAgentId),
-  );
-  const memberIds = new Set(members.map((m) => m.id));
-  const candidates = agents
-    .filter((a) => !memberIds.has(a.id))
-    .map((a) => toEntry(a.id, false, false));
-
-  return { workspace: workspaceDir, activeAgentId, members, candidates };
+  await writeJsonAtomic(workspaceProjectPath(workspaceDir), binding);
+  await claimWorkspaceDir(id, workspaceDir);
+  return { binding, switched: true, keptSessions: kept };
 }
 
 /**
  * 幂等确保工作区绑定到某 agent（默认 agent）。脚本 / 迁移用：
- * agent 定义不存在则按默认骨架创建，工作区未绑或激活的不是目标 agent 则写入绑定。
+ * agent 定义不存在则按默认骨架创建，工作区未绑或绑的不是目标 agent 则写入绑定。
  */
 export async function ensureWorkspaceBinding(
   workspacePath: string,
@@ -616,7 +354,7 @@ export async function ensureWorkspaceBinding(
   await ensureAgent(agentId, agentId === DEFAULT_AGENT_ID ? DEFAULT_AGENT_NAME : undefined);
   const workspaceDir = await resolveWorkspaceDir(workspacePath);
   const existing = await readBinding(workspaceDir);
-  if (existing?.activeAgentId === agentId) return existing;
+  if (existing?.agentId === agentId) return existing;
   const { binding } = await writeBinding(workspacePath, agentId, { reason: "ensure" });
   return binding;
 }
@@ -633,13 +371,13 @@ export async function readBindingView(workspacePath: string): Promise<BindingVie
   const workspaceDir = await resolveWorkspaceDir(workspacePath);
   const binding = await readBinding(workspaceDir);
   if (!binding) return { agentId: null };
-  const view: BindingView = { agentId: binding.activeAgentId, boundAt: binding.createdAt };
+  const view: BindingView = { agentId: binding.agentId, boundAt: binding.createdAt };
   if (binding.lastAgentSwitch) view.lastSwitch = binding.lastAgentSwitch;
   try {
-    const def = await readAgent(binding.activeAgentId);
+    const def = await readAgent(binding.agentId);
     view.agentName = def.name;
   } catch {
-    view.agentName = binding.activeAgentId; // 定义缺失时至少回显标识，便于前端提示
+    view.agentName = binding.agentId; // 定义缺失时至少回显标识，便于前端提示
   }
   return view;
 }

@@ -433,7 +433,7 @@ export async function getSelection(workspacePath: string, normalizedWorkspace: s
       409,
     );
   }
-  const runtime = await resolveAgentRuntime(binding.activeAgentId);
+  const runtime = await resolveAgentRuntime(binding.agentId);
   const file = await readModelsFile();
   const resolved = await resolveEffectiveModel(normalizedWorkspace);
   const configured = runtime.config.model;
@@ -488,7 +488,7 @@ export async function setSelection(
   if (typeof modelId !== "string" || modelId.trim().length === 0) {
     throw new ModelError("MODEL_INVALID_CONFIG", "modelId 不能为空", 400, "modelId");
   }
-  await updateAgent(binding.activeAgentId, {
+  await updateAgent(binding.agentId, {
     config: { model: { id: modelId.trim(), providerId: provider.id } },
   });
   invalidateModelResolution(normalizedWorkspace);

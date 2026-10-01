@@ -88,7 +88,9 @@ import {
   deleteAgent,
   listAgents,
   readAgent,
+  setAgentEnabled,
   setAgentPinned,
+  setAgentWorkspaceDir,
   updateAgent,
 } from "./agents/registry.js";
 import {
@@ -104,15 +106,8 @@ import {
   listChannelViews,
   upsertChannelView,
 } from "./channels/index.js";
-import {
-  addWorkspaceAgent,
-  readBindingView,
-  readWorkspaceAgentsView,
-  removeWorkspaceAgent,
-  setActiveAgent,
-  setWorkspaceAgentEnabled,
-  writeBinding,
-} from "./binding.js";
+import { readBindingView, writeBinding } from "./binding.js";
+import { readAgentProfilesView } from "./agent-profiles.js";
 import {
   JobError,
   applyJobPatch,
@@ -474,52 +469,40 @@ app.put("/workspace/binding", async (c) => {
   }
   const mode = body.mode === "archive" ? "archive" : "keep";
   const result = await writeBinding(body.path, body.agentId, { mode, reason: "user" });
-  return c.json({ agentId: result.binding.activeAgentId });
+  return c.json({ agentId: result.binding.agentId });
 });
 
-// —— 智能体选择器（一个工作区 N 个 agent + 一个激活位）——
+// —— 智能体档案 / 工作区归属（1:1）——
 //
-// 契约见 apps/web/src/lib/workspaceAgentsApi.ts。这里只做薄转发，规则全在 binding.ts：
-// 默认 agent 不可停用/移除；停用或移除激活位时自动回落默认 agent。
+// 契约见 apps/web/src/lib/agentProfilesApi.ts。规则在 agents/registry.ts：
+// agent ↔ 工作区目录 1:1，一个目录只能绑一位；默认 agent 不能停用。
 
-app.get("/workspace/agents", async (c) => {
-  const workspace = requireWorkspaceQuery(c.req.query("path"));
-  return c.json(await readWorkspaceAgentsView(workspace));
+/** 选择器要的名单：所有 agent + 各自的工作区目录 + 当前工作区用的是谁 */
+app.get("/agent-profiles", async (c) => {
+  const workspace = c.req.query("workspace");
+  return c.json(await readAgentProfilesView(typeof workspace === "string" ? workspace : ""));
 });
 
-/** 加成员 / 改启用状态 / 切激活位（一次请求可以同时做） */
-app.put("/workspace/agents/:id", async (c) => {
-  const workspace = requireWorkspaceQuery(c.req.query("path"));
-  const id = c.req.param("id");
-  const body = (await c.req.json().catch(() => ({}))) as {
-    enabled?: unknown;
-    active?: unknown;
-    add?: unknown;
-  };
-  if (body.add === true) {
-    await addWorkspaceAgent(workspace, id, {
-      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
-      ...(body.active === true ? { makeActive: true } : {}),
-    });
-  } else {
-    if (typeof body.enabled === "boolean") {
-      await setWorkspaceAgentEnabled(workspace, id, body.enabled);
-    }
-    if (body.active === true) {
-      // 激活位要求「已启用」；上面的 enable 先落盘，所以这里能直接切
-      await setActiveAgent(workspace, id);
-    }
+/** 给 agent 指定 / 解除工作区目录（1:1 冲突会返回 409） */
+app.put("/agents/:id/workspace", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { workspaceDir?: unknown };
+  const value = body.workspaceDir;
+  if (value !== null && typeof value !== "string") {
+    return c.json(
+      { error: "AGENT_INVALID_CONFIG", message: "workspaceDir 必须是字符串或 null" },
+      400,
+    );
   }
-  return c.json(await readWorkspaceAgentsView(workspace));
+  const config = await setAgentWorkspaceDir(c.req.param("id"), value);
+  return c.json({ id: c.req.param("id"), workspaceDir: config.workspaceDir });
 });
 
-app.delete("/workspace/agents/:id", async (c) => {
-  const workspace = requireWorkspaceQuery(c.req.query("path"));
-  await removeWorkspaceAgent(workspace, c.req.param("id"));
-  return c.json(await readWorkspaceAgentsView(workspace));
+app.put("/agents/:id/enabled", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown };
+  const config = await setAgentEnabled(c.req.param("id"), body.enabled === true);
+  return c.json({ id: c.req.param("id"), enabled: config.enabled });
 });
 
-/** 置顶是 agent 自己的全局偏好（不属于任何工作区） */
 app.put("/agents/:id/pinned", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { pinned?: unknown };
   const config = await setAgentPinned(c.req.param("id"), body.pinned === true);

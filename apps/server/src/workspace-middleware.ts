@@ -77,7 +77,7 @@ export function requireWorkspacePath(config?: unknown): string {
 export async function resolveBoundAgent(workspaceDir: string): Promise<AgentRuntime | null> {
   const binding = await readBinding(workspaceDir);
   if (!binding) return null;
-  return resolveAgentRuntime(binding.activeAgentId);
+  return resolveAgentRuntime(binding.agentId);
 }
 
 /**
@@ -98,7 +98,7 @@ export const agentBindingMiddleware = createMiddleware({
       );
     }
     // 绑定的 agent 必须存在且配置合法，否则一样拒绝（MUST NOT 静默改用别的 agent）
-    await resolveAgentRuntime(binding.activeAgentId);
+    await resolveAgentRuntime(binding.agentId);
     return undefined;
   },
 });
@@ -127,7 +127,7 @@ export const workspaceMiddleware = createMiddleware({
       // 记录这条会话「创建时属于哪个 agent」（换绑后仍可追溯）。
       // 身份只认工作区绑定，绝不看客户端传来的 agent_id。
       const binding = await readBinding(dir);
-      if (binding) await stampSessionOwner(dir, threadId, binding.activeAgentId);
+      if (binding) await stampSessionOwner(dir, threadId, binding.agentId);
     }
     return undefined;
   },

@@ -235,7 +235,7 @@ describe("10.5 触发身份取工作区绑定，换绑后按新身份", () => {
     };
     await runJobNow({ workspace: ws, job: spec, executor, deliverer: async () => ({}) });
     expect(seen).toEqual(["alpha"]);
-    expect((await readBinding(ws))?.activeAgentId).toBe("alpha");
+    expect((await readBinding(ws))?.agentId).toBe("alpha");
 
     await writeBinding(ws, "beta");
     await runJobNow({ workspace: ws, job: spec, executor, deliverer: async () => ({}) });

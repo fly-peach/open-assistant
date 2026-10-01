@@ -116,6 +116,10 @@ export interface AgentSummary {
   availableInChat: boolean;
   /** 是否置顶到选择器第一组（agent 自己的偏好） */
   pinned: boolean;
+  /** 这个 agent 维护的工作区目录；null = 还没指定 */
+  workspaceDir: string | null;
+  /** 是否可用（默认 agent 恒为 true） */
+  enabled: boolean;
   /** 运行状态：配置非法 → failed；否则 running（enabled 在工作区那一层，见 binding.ts） */
   startupStatus: AgentStartupStatus;
 }
@@ -244,6 +248,8 @@ export async function listAgents(): Promise<AgentListResult> {
         issues: ["目录名不是合法的 agent 标识"],
         availableInChat: false,
         pinned: false,
+        workspaceDir: null,
+        enabled: false,
         startupStatus: "failed",
       });
       continue;
@@ -255,6 +261,8 @@ export async function listAgents(): Promise<AgentListResult> {
     let model: AgentModelSummary | null | undefined = undefined;
     let availableInChat = true;
     let pinned = false;
+    let workspaceDir: string | null = null;
+    let enabled = true;
     let configOk = true;
     try {
       const config = await readAgentConfig(id, dir);
@@ -268,6 +276,8 @@ export async function listAgents(): Promise<AgentListResult> {
         : null;
       availableInChat = config.availableInChat;
       pinned = config.pinned;
+      workspaceDir = config.workspaceDir;
+      enabled = config.enabled;
     } catch {
       // 配置非法 → 用目录名兜底展示，异常已记在 issues 里
       model = undefined;
@@ -279,6 +289,9 @@ export async function listAgents(): Promise<AgentListResult> {
       valid: issues.length === 0,
       availableInChat: availableInChat && configOk,
       pinned,
+      // 默认 agent 恒可用：它是兜底，不能被停用（写入侧也拦，这里兜住已写坏的文件）
+      enabled: configOk && (enabled || id === DEFAULT_AGENT_ID),
+      workspaceDir,
       startupStatus: !configOk ? "failed" : "running",
     };
     if (description !== undefined) summary.description = description;
@@ -377,6 +390,127 @@ export async function updateAgent(agentId: string, patch: UpdateAgentInput): Pro
 }
 
 /** 删除 agent 定义（整目录删除） */
+/**
+ * 给 agent 指定工作区目录。
+ *
+ * **不变式：一个目录至多被一个 agent 维护**（对应 QwenPaw 里 agent↔workspace_dir 的 1:1）。
+ * 所以写盘前先扫一遍其他 agent，发现冲突就拒绝 —— 否则两个助手会同时改一份文件。
+ * `null` = 解除指定。
+ */
+export async function setAgentWorkspaceDir(
+  agentId: string,
+  workspaceDir: string | null,
+): Promise<AgentConfig> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  let next: string | null = null;
+  if (workspaceDir !== null) {
+    if (typeof workspaceDir !== "string" || workspaceDir.trim().length === 0) {
+      throw new AgentError("AGENT_INVALID_CONFIG", "workspaceDir 必须是非空字符串或 null", 400, "workspaceDir");
+    }
+    next = workspaceDir.trim();
+    const st = await statOrNull(next);
+    if (!st?.isDirectory()) {
+      throw new AgentError(
+        "WORKSPACE_NOT_FOUND",
+        `工作区目录不存在：${next}`,
+        400,
+        "workspaceDir",
+      );
+    }
+    const owner = await findAgentByWorkspaceDir(next);
+    if (owner && owner !== agentId) {
+      throw new AgentError(
+        "WORKSPACE_ALREADY_BOUND",
+        `这个目录已经由「${owner}」在维护了：一个工作区只能绑一位 agent`,
+        409,
+        "workspaceDir",
+      );
+    }
+  }
+  const current = await readAgentConfig(agentId, dir);
+  const config: AgentConfig = { ...current, workspaceDir: next };
+  await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), config);
+  invalidateAgentRuntime(agentId);
+  return config;
+}
+
+/** 找到正在维护该目录的 agent（没有 → null）。路径做归一化比较（Windows 大小写/分隔符） */
+export async function findAgentByWorkspaceDir(workspaceDir: string): Promise<string | null> {
+  const target = normalizePath(workspaceDir);
+  for (const id of await listAgentIds()) {
+    try {
+      const config = await readAgentConfig(id, agentDirPath(id));
+      if (config.workspaceDir && normalizePath(config.workspaceDir) === target) return id;
+    } catch {
+      // 配置坏掉的 agent 跳过：它本来也用不了
+    }
+  }
+  return null;
+}
+
+function normalizePath(value: string): string {
+  return path.resolve(value).replaceAll("\\", "/").replace(/\/$/, "").toLowerCase();
+}
+
+/**
+ * 绑定侧调用：把目录认领给 agentId（容错版）。
+ * 已认领同一个 → 不动；被别人认领 → 也照写（**调用方是权威**：绑定刚改完，
+ * 这里只是把镜像记录追平，不该反过来拦下一次已经生效的换绑）。
+ */
+export async function claimWorkspaceDir(agentId: string, workspaceDir: string): Promise<void> {
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) return;
+  try {
+    const config = await readAgentConfig(agentId, dir);
+    if (config.workspaceDir === workspaceDir) return;
+    await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), { ...config, workspaceDir });
+    invalidateAgentRuntime(agentId);
+  } catch {
+    // 配置坏掉的 agent 跳过：它本来也切不过去
+  }
+}
+
+/** 绑定侧调用：让某 agent 交出它认领的那个目录（仅当目录正是它认领的） */
+export async function releaseWorkspaceDir(agentId: string, workspaceDir: string): Promise<void> {
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) return;
+  try {
+    const config = await readAgentConfig(agentId, dir);
+    if (!config.workspaceDir) return;
+    if (normalizePath(config.workspaceDir) !== normalizePath(workspaceDir)) return;
+    await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), { ...config, workspaceDir: null });
+    invalidateAgentRuntime(agentId);
+  } catch {
+    // 同上
+  }
+}
+
+/** 启用 / 停用（默认 agent 不能停用：兜底） */
+export async function setAgentEnabled(agentId: string, enabled: boolean): Promise<AgentConfig> {
+  assertValidAgentId(agentId);
+  const dir = agentDirPath(agentId);
+  if (!(await agentExists(agentId))) {
+    throw new AgentError("AGENT_NOT_FOUND", `找不到 agent 定义：${agentId}`, 404, "id");
+  }
+  if (!enabled && agentId === DEFAULT_AGENT_ID) {
+    throw new AgentError(
+      "AGENT_INVALID_CONFIG",
+      `默认 agent（${DEFAULT_AGENT_ID}）不能停用：它保证任何时候都有一个能用的助手`,
+      400,
+      "enabled",
+    );
+  }
+  const current = await readAgentConfig(agentId, dir);
+  const config: AgentConfig = { ...current, enabled };
+  await writeJsonAtomic(path.join(dir, AGENT_CONFIG_FILE), config);
+  invalidateAgentRuntime(agentId);
+  return config;
+}
+
 /** 置顶 / 取消置顶（全局偏好，写在 agent 自己的 config.json 里） */
 export async function setAgentPinned(agentId: string, pinned: boolean): Promise<AgentConfig> {
   assertValidAgentId(agentId);

@@ -25,6 +25,7 @@ import { useWorkspaceContext } from "@/providers/WorkspaceProvider";
 import { Bot } from "lucide-react";
 import zh, { t } from "@/i18n/zh";
 import { AgentSelector } from "@/app/components/agents/AgentSelector";
+import { bindWorkspace } from "@/lib/agentProfilesApi";
 
 type StatusFilter = "all" | "idle" | "busy" | "interrupted" | "error";
 
@@ -130,11 +131,12 @@ export function ThreadList({
   onClose,
   onInterruptCountChange,
 }: ThreadListProps) {
-  const [currentThreadId] = useQueryState("threadId");
+  const [currentThreadId, setThreadId] = useQueryState("threadId");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   // 5.6：会话列表标注创建者 —— 与当前绑定不一致的旧会话显示「由 xxx 创建」。
-  const { workspacePath } = useWorkspaceContext();
+  const { workspacePath, setWorkspacePath } = useWorkspaceContext();
   const binding = useBindingState(workspacePath);
   const currentAgentId = binding.state === "bound" ? binding.agentId : null;
   const agentLabel = useCallback(
@@ -229,7 +231,32 @@ export function ThreadList({
         智能体选择器放侧边栏顶部（对齐 QwenPaw 的 Sidebar + AgentSelector）：
         「这个工作区现在用哪个助手、还能用哪些」应该在会话列表之前看到。
       */}
-      <AgentSelector workspace={workspacePath} onActiveAgentChange={() => void binding.reload()} />
+      <AgentSelector
+        workspace={workspacePath}
+        onSwitchWorkspace={(agentId, path) => {
+          // 切换 agent = 切换到它维护的工作区（1:1）。
+          // 必须顺手建立绑定：否则切过去的目录是「未绑定」，对话会被运行期拦下。
+          // 绑定失败（目录没了 / agent 被删）就不切，并把原因亮出来 —— 不做半截切换。
+          void (async () => {
+            try {
+              await bindWorkspace(path, agentId);
+            } catch (err) {
+              setSwitchError((err as Error).message);
+              return;
+            }
+            setSwitchError(null);
+            setWorkspacePath(path);
+            void setThreadId(null);
+            void binding.reload();
+          })();
+        }}
+      />
+
+      {switchError && (
+        <p className="px-3 pb-1 text-[11px] text-[var(--color-error)]" data-threadlist-switch-error>
+          {switchError}
+        </p>
+      )}
 
       {/* Header with title, filter, and close button */}
       <div className="grid flex-shrink-0 grid-cols-[1fr_auto] items-center gap-3 border-b border-border p-4">

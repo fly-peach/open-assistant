@@ -77,6 +77,19 @@ export interface AgentConfig {
    * 注意这是**全局偏好**（属于 agent 自己），不是「某个工作区里置顶」。
    */
   pinned: boolean;
+  /**
+   * 这个 agent 维护的工作区目录（对应 QwenPaw `AgentProfileRef.workspace_dir`）。
+   *
+   * **agent ↔ 工作区目录是 1:1**：一个 agent 至多一个目录，一个目录至多一个 agent
+   * （后者由 registry 在写盘前校验，见 assertWorkspaceFree）。
+   * `null` = 还没指定（可以在选择器里看到，但切不过去）。
+   */
+  workspaceDir: string | null;
+  /**
+   * 是否可用（对应 QwenPaw `AgentProfileRef.enabled`，那儿是「控制实例是否加载」）。
+   * 默认 agent 不能停用：它保证任何时候都有一个能用的助手。
+   */
+  enabled: boolean;
 }
 
 export interface AgentConfigDefaults {
@@ -98,6 +111,8 @@ export function defaultAgentConfig(defaults: AgentConfigDefaults): AgentConfig {
     contactableAgents: [],
     availableInChat: true,
     pinned: false,
+    workspaceDir: null,
+    enabled: true,
   };
 }
 
@@ -112,6 +127,8 @@ const KNOWN_KEYS = new Set([
   "contactableAgents",
   "availableInChat",
   "pinned",
+  "workspaceDir",
+  "enabled",
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -256,6 +273,25 @@ export function normalizeAgentConfig(
       addIssue("pinned", "pinned 必须是布尔值");
     } else {
       config.pinned = raw["pinned"];
+    }
+  }
+
+  if (raw["workspaceDir"] !== undefined) {
+    const dir = raw["workspaceDir"];
+    if (dir === null) {
+      config.workspaceDir = null;
+    } else if (typeof dir !== "string") {
+      addIssue("workspaceDir", "workspaceDir 必须是字符串或 null");
+    } else {
+      config.workspaceDir = dir.trim().length > 0 ? dir.trim() : null;
+    }
+  }
+
+  if (raw["enabled"] !== undefined) {
+    if (typeof raw["enabled"] !== "boolean") {
+      addIssue("enabled", "enabled 必须是布尔值");
+    } else {
+      config.enabled = raw["enabled"];
     }
   }
 
