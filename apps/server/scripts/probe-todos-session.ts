@@ -4,12 +4,15 @@
  * 用法：bun run scripts/probe-todos-session.ts
  */
 import { agent } from "../src/agent.js";
+import { ensureWorkspaceBinding } from "../src/binding.js";
 import { ensureWorkspace, getWorkspaceRoot } from "../src/workspace.js";
 import { readTodos } from "../src/todos.js";
 import path from "node:path";
 
 const WS = path.resolve(getWorkspaceRoot(), "todos-session");
 const dir = await ensureWorkspace(WS);
+// agent 身份以工作区绑定为准（未绑定不得对话）
+await ensureWorkspaceBinding(dir);
 const marker = `session-${Date.now()}`;
 
 let failures = 0;

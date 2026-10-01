@@ -27,14 +27,17 @@ import { ChatProvider } from "@/providers/ChatProvider";
 import { ChatInterface } from "@/app/components/ChatInterface";
 import { useWorkspaceContext } from "@/providers/WorkspaceProvider";
 import { WorkspaceSidebar } from "@/app/components/workspace/WorkspaceSidebar";
+import { ThreadIdBadge } from "@/app/components/threads/ThreadIdBadge";
 import { PathLabel } from "@/app/components/workspace/PathLabel";
 import { DockablePanel } from "@/app/components/panel/DockablePanel";
 import zh from "@/i18n/zh";
 
 /** 工作区侧边栏展开状态在 localStorage 的键。 */
 const WS_PANEL_KEY = "open-assistant.workspace-panel";
-/** 工作区面板停靠时的固定宽度（px）。 */
-const WORKSPACE_PANEL_WIDTH = 360;
+/** 工作区面板停靠时的固定宽度（px）。
+ * 360 太窄：文件树要显示路径、预览要放代码与 TODO 卡片，都会被挤得难看。
+ * 480 让路径与长文件名能完整展示（面板内的错位大多来自宽度不足而不是样式写错）。 */
+const WORKSPACE_PANEL_WIDTH = 480;
 
 interface ChatWorkspaceProps {
   assistant: Assistant | null;
@@ -87,6 +90,7 @@ export function ChatWorkspace({ assistant }: ChatWorkspaceProps) {
           </Button>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {threadId && <ThreadIdBadge threadId={threadId} />}
           <Button
             variant="outline"
             size="sm"

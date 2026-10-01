@@ -1,8 +1,19 @@
 /**
- * 工作区中间件：把「run 入口校验 / 会话归属 / 人设装载 / 首次引导注入 / 人设保护」放在一处。
+ * 工作区中间件：把「run 入口校验 / 会话归属 / **agent 身份解析** / 人设与记忆装载 / 首次引导注入 / 人设与工具权限保护」放在一处。
  *
  * 单独成文件是为了让测试可以用一个假模型加载**生产用的同一份中间件**，
  * 直接断言「发给模型的消息」与「工具调用被如何拦截」，而不必构造真实模型。
+ *
+ * ## 两层中间件：为什么拆成两个
+ *
+ * - `agentBindingMiddleware`：**严格形态**。工作区没绑定 agent（或绑定的 agent 不存在 / 配置非法）
+ *   → 在模型调用前拒绝（对齐 agent-binding「未绑定的工作区不得对话」）。生产图 `agent.ts` 用它。
+ * - `workspaceMiddleware`：**兼容形态**。绑定存在时按绑定解析 agent（人设 / 记忆 / 工具白名单）；
+ *   没有绑定时退回「工作区 AGENTS.md → 内置默认」的老行为。这样既满足三档人设装载，
+ *   又不破坏既有单测（它们故意构造未绑定的临时工作区来测引导与人设保护）。
+ *
+ * 运行身份的唯一依据是 `<工作区>/.open-assistant/project.json` 里的绑定；
+ * 客户端 run 传的 `configurable.agent_id` **一律不采信**（否则可以拿 A 工作区的文件用 B agent 的权限操作）。
  *
  * ## 首次引导的侵入点选择（tasks 9.6）
  *
@@ -14,7 +25,7 @@
  * 3. 包装模型调用（自己包一层 Runnable）—— 等价于 2 但要自己处理 tools 绑定与流式。
  *
  * 选 **2 (`wrapModelCall`)**：它天然满足 spec 的「本轮消息级注入 + 不污染系统提示词」，
- * 而且能顺手在同一处完成人设装载（同样是「只改本次系统提示词」的语义）。
+ * 而且能顺手在同一处完成人设与记忆装载（同样是「只改本次系统提示词」的语义）。
  * 「只触发一次」由两件事共同保证：
  * - 本轮内：首次交互判定要求「只有一条用户消息、且没有助手回复」，第 2 次模型调用时消息里
  *   已经有 AIMessage，判定自然不再成立；
@@ -38,8 +49,12 @@ import {
   prependGuidance,
   shouldInjectBootstrap,
 } from "./bootstrap.js";
-import { readPersona, withPersona } from "./persona.js";
+import { loadPersona, withAgentMemory, withPersona } from "./persona.js";
 import { upsertWorkspaceSessionIndex } from "./sessions.js";
+import { AgentError } from "./agents/errors.js";
+import { type AgentRuntime, resolveAgentRuntime } from "./agents/registry.js";
+import { gateTool } from "./agents/config.js";
+import { readBinding, stampSessionOwner } from "./binding.js";
 
 /** 解析当前 run 的工作区绝对路径；缺失 → 抛错（拒绝对话） */
 export function requireWorkspacePath(config?: unknown): string {
@@ -53,6 +68,40 @@ export function requireWorkspacePath(config?: unknown): string {
   }
   return p;
 }
+
+/**
+ * 按工作区绑定解析运行身份（唯一依据）。
+ * - 未绑定 → null（调用方决定是拒绝还是走兼容回退）
+ * - 已绑定但 agent 不存在 / 配置非法 → 抛 AgentError
+ */
+export async function resolveBoundAgent(workspaceDir: string): Promise<AgentRuntime | null> {
+  const binding = await readBinding(workspaceDir);
+  if (!binding) return null;
+  return resolveAgentRuntime(binding.agentId);
+}
+
+/**
+ * 严格形态：未绑定 / 绑定的 agent 不存在 / 配置非法 → 在模型调用前拒绝。
+ * 只加进生产图（agent.ts），与 workspaceMiddleware 的兼容回退分开，便于单测复用后者。
+ */
+export const agentBindingMiddleware = createMiddleware({
+  name: "AgentBindingMiddleware",
+  beforeAgent: async () => {
+    const config = getConfig() as { configurable?: Record<string, unknown> };
+    const dir = await resolveWorkspaceDir(requireWorkspacePath(config));
+    const binding = await readBinding(dir);
+    if (!binding) {
+      throw new AgentError(
+        "AGENT_NOT_BOUND",
+        "此工作区尚未绑定 agent：请先在「工作区 → 选择 agent」里为它选一个 agent，再开始对话",
+        409,
+      );
+    }
+    // 绑定的 agent 必须存在且配置合法，否则一样拒绝（MUST NOT 静默改用别的 agent）
+    await resolveAgentRuntime(binding.agentId);
+    return undefined;
+  },
+});
 
 /** 可能覆盖 / 删除已有文件的工具 */
 const WRITE_TOOLS = new Set(["write_file", "edit_file", "delete"]);
@@ -75,13 +124,18 @@ export const workspaceMiddleware = createMiddleware({
     const threadId = config.configurable?.["thread_id"];
     if (typeof threadId === "string" && threadId.length > 0) {
       await upsertWorkspaceSessionIndex(dir, { id: threadId });
+      // 记录这条会话「创建时属于哪个 agent」（换绑后仍可追溯）。
+      // 身份只认工作区绑定，绝不看客户端传来的 agent_id。
+      const binding = await readBinding(dir);
+      if (binding) await stampSessionOwner(dir, threadId, binding.agentId);
     }
     return undefined;
   },
 
   /**
-   * 人设装载 + 首次引导注入：只改「本次发给模型的消息」。
-   * - 人设：`AGENTS.md` 存在 → 追加 `<persona>` 段落；缺失 → 保持内置默认人设
+   * 人设与记忆装载 + 首次引导注入：只改「本次发给模型的消息」。
+   * - 人设三档：agent 的 AGENTS.md → 工作区的 AGENTS.md（过渡期） → 内置默认（不注入）
+   * - 记忆：绑定的 agent 的跨工作区长期记忆（非空才注入 `<agent_memory>`）
    * - 引导：`BOOTSTRAP.md` 存在 + 未触发过 + 首次用户交互 → 拼到本轮用户消息前
    */
   wrapModelCall: async (request, handler) => {
@@ -97,8 +151,20 @@ export const workspaceMiddleware = createMiddleware({
 
     const updates: Record<string, unknown> = {};
 
-    const persona = await readPersona(dir);
-    if (persona) updates["systemMessage"] = withPersona(request.systemMessage, persona);
+    // 绑定损坏 / agent 缺失：不静默换人，直接失败（生产路径由 agentBindingMiddleware 提前拦）
+    const runtime = await resolveBoundAgent(dir);
+
+    const persona = await loadPersona({
+      agentDir: runtime?.dir ?? null,
+      workspaceDir: dir,
+    });
+    if (persona.content) {
+      updates["systemMessage"] = withPersona(request.systemMessage, persona.content);
+    }
+    if (runtime && runtime.memory.trim().length > 0) {
+      const base = (updates["systemMessage"] as typeof request.systemMessage | undefined) ?? request.systemMessage;
+      updates["systemMessage"] = withAgentMemory(base, runtime.memory);
+    }
 
     if (isFirstUserInteraction(request.messages) && (await shouldInjectBootstrap(dir))) {
       if (await claimBootstrapTrigger(dir)) {
@@ -111,6 +177,10 @@ export const workspaceMiddleware = createMiddleware({
   },
 
   /**
+   * 工具权限 = 绑定 agent 的白名单（tasks 1.12）+ 人设保护（9.8）。
+   *
+   * 白名单先于人设保护：被 agent 配置关掉的工具组一律拿不到，无论它想碰什么文件。
+   *
    * 人设保护：只保护 `AGENTS.md`（9.8）。
    * `BOOTSTRAP.md` 必须可删 —— 否则引导永远结束不了（design.md Decision #9 的权限后果）。
    *
@@ -122,6 +192,35 @@ export const workspaceMiddleware = createMiddleware({
   wrapToolCall: async (request, handler) => {
     const toolName = request.toolCall.name;
     const args = (request.toolCall.args ?? {}) as Record<string, unknown>;
+
+    // —— agent 工具白名单（权限边界，以工作区绑定为准）——
+    const workspace = readWorkspacePathFromConfig({
+      configurable: request.runtime?.configurable,
+    });
+    if (workspace) {
+      let dir: string | null = null;
+      try {
+        dir = normalizeWorkspacePath(workspace);
+      } catch {
+        dir = null;
+      }
+      if (dir) {
+        const runtime = await resolveBoundAgent(dir);
+        if (runtime) {
+          const gate = gateTool(runtime.config, toolName);
+          if (!gate.allowed) {
+            return new ToolMessage({
+              content:
+                `ERROR [TOOL_NOT_ALLOWED] agent「${runtime.config.name}」(${runtime.id}) 的工具白名单未开启` +
+                `「${gate.group}」这一组，因此不能调用 ${toolName}。${gate.reason ?? ""}`,
+              tool_call_id: request.toolCall.id ?? "",
+              name: toolName,
+            });
+          }
+        }
+      }
+    }
+
     if (!isPersonaPath(args["file_path"]) || !WRITE_TOOLS.has(toolName)) {
       return handler(request);
     }

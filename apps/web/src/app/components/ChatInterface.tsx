@@ -32,9 +32,12 @@ import { Assistant } from "@langchain/langgraph-sdk";
 import { groupMessagesIntoTurns } from "@/app/utils/turns";
 import { useChatContext } from "@/providers/ChatProvider";
 import { useWorkspaceContext } from "@/providers/WorkspaceProvider";
+import { useBindingState } from "@/app/hooks/useAgents";
+import { canSendWithBinding } from "@/app/utils/agentConfig";
 import { cn } from "@/lib/utils";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { FilesPopover } from "@/app/components/TasksFilesSidebar";
+import { ModelPicker } from "@/app/components/models/ModelPicker";
 import zh, { t } from "@/i18n/zh";
 
 interface ChatInterfaceProps {
@@ -116,9 +119,15 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(({ assistant }) => {
 
   const { workspacePath, openWorkspace } = useWorkspaceContext();
 
-  // 未选择工作区时禁止发送（对齐 specs/workspace「未指定工作区不得对话」）：
+  // 5.4：未绑定 agent 的工作区不得对话（前端先挡，后端在 run 入口强校验）。
+  // 绑定状态「读不到」时不停用，否则后端未就绪会让整个对话不可用。
+  const binding = useBindingState(workspacePath);
+  const bindingBlocked = Boolean(workspacePath) && !canSendWithBinding(binding.state);
+
+  // 未选择工作区、或未绑定 agent 时禁止发送：
   // 前端禁用只是体验，真正的约束由后端在 run 入口与工具层双重强校验。
-  const submitDisabled = isLoading || !assistant || !workspacePath;
+  const submitDisabled =
+    isLoading || !assistant || !workspacePath || bindingBlocked;
 
   const handleSubmit = useCallback(
     (e?: FormEvent) => {
@@ -440,6 +449,16 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(({ assistant }) => {
                 {zh.workspace.requiredHint}
               </p>
             )}
+            {workspacePath && bindingBlocked && (
+              <p
+                className="border-b border-border px-4 py-2 text-xs text-[var(--color-warning)]"
+                data-chat-binding-hint={binding.state}
+              >
+                {binding.state === "missing-agent"
+                  ? t(zh.binding.absentHint, { id: binding.agentId ?? "" })
+                  : zh.binding.blockedHint}
+              </p>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
@@ -452,7 +471,7 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(({ assistant }) => {
               rows={1}
             />
             <div className="flex justify-between gap-2 p-3">
-              <div className="flex items-center">
+              <div className="flex items-center gap-2">
                 <Button
                   type="button"
                   variant="ghost"
@@ -468,6 +487,8 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(({ assistant }) => {
                     {wide ? zh.chatWidth.wide : zh.chatWidth.narrow}
                   </span>
                 </Button>
+                {/* 可选模型：写进绑定 agent 的 config.json，下一轮生效（见 ModelPicker 顶部注释） */}
+                <ModelPicker />
               </div>
               <div className="flex justify-end gap-2">
                 <Button

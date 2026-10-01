@@ -130,13 +130,32 @@ export class WorkspaceApiError extends Error {
   get isConflict(): boolean {
     return this.code === "TODO_CONFLICT" || this.status === 409;
   }
+
+  /** 路径不存在（如工作区里还没有 `wiki/`）：界面据此展示可读空状态而不是报错。 */
+  get isNotFound(): boolean {
+    return this.status === 404 || this.code === "PATH_NOT_FOUND";
+  }
+}
+
+/** 判断任意错误是否「路径不存在」（SWR 把错误原样给出，界面需要区分空状态与失败）。 */
+export function isPathNotFound(error: unknown): boolean {
+  if (error instanceof WorkspaceApiError) return error.isNotFound;
+  if (error && typeof error === "object") {
+    const record = error as { status?: unknown; code?: unknown };
+    return record.status === 404 || record.code === "PATH_NOT_FOUND";
+  }
+  return false;
 }
 
 export function getBaseUrl(): string {
   return getConfig()?.deploymentUrl || "http://localhost:2024";
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * 统一的业务 API 请求（同源 base = 部署地址）。
+ * 导出给其他业务客户端（agents / jobs / memory）复用同一套错误归一化。
+ */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${getBaseUrl()}${path}`, {

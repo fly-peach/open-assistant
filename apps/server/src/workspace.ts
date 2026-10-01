@@ -6,6 +6,7 @@
  * - workspace / 本机目录浏览与选择：listFilesystemRoots / listDirectories
  * - workspace / 选择目录时不写入任何文件：ensureWorkspace 只创建目录，MUST NOT 写任何文件
  * - workspace / 工作区初始化是显式动作：initWorkspace / readWorkspaceInitStatus（幂等、不覆盖）
+ * - project-wiki / 目录骨架：initWorkspace 同时幂等地补齐 wiki 骨架（tasks 11.9）
  * - workspace / 拒绝文件系统根：normalizeWorkspacePath
  * - workspace / 同一目录同一身份：realpath 归一化
  * - workspace / 文件操作路径约束：resolveWorkspacePath / realpathWithin
@@ -16,6 +17,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 import { WORKSPACE_MATERIALS } from "./workspace-materials.js";
+import { ensureWikiSkeleton, type WikiSkeletonResult } from "./wiki/skeleton.js";
 
 /** 默认工作区名（历史 id 模型遗留，用于历史会话迁移与默认选中） */
 export const DEFAULT_WORKSPACE_NAME = "default";
@@ -265,19 +267,24 @@ export async function readWorkspaceInitStatus(input: unknown): Promise<Workspace
 
 export interface WorkspaceInitResult {
   path: string;
-  /** 本次新写入的文件名 */
+  /** 本次新写入的文件名（两件套：AGENTS.md / BOOTSTRAP.md） */
   created: string[];
   /** 已存在因而跳过的文件名（内容一个字节未动） */
   skipped: string[];
+  /** 项目 wiki 骨架（tasks 11.9）：单独报告，避免与两件套混在一起 */
+  wiki: WikiSkeletonResult;
 }
 
 /**
- * 显式初始化工作区（tasks 9.3）：只补缺失的两件套，绝不覆盖已存在的同名文件。
+ * 显式初始化工作区（tasks 9.3 + 11.9）：只补缺失的两件套与 wiki 骨架，绝不覆盖已存在的同名文件。
  *
  * 用 `wx` 旗标写入（内核级“不存在才创建”），所以并发调用也只有一个能写成，
  * 已存在的文件即使内容完全不同也原样保留。
  * 任一文件写失败（权限 / 磁盘 / 同名目录等）→ 可读错误，已写入的不回滚，
  * 工作区本身仍可用（对齐 workspace「初始化失败可理解」）。
+ *
+ * wiki 骨架（`wiki/SCHEMA.md` / `index.md` / `log.md` / `raw/` / `summaries/` / `entities/`）
+ * 同样幂等：非空目录只补缺，不覆盖同名文件；结果单独放在 `wiki` 字段里。
  */
 export async function initWorkspace(input: unknown): Promise<WorkspaceInitResult> {
   const dir = await resolveWorkspaceDir(input);
@@ -315,7 +322,27 @@ export async function initWorkspace(input: unknown): Promise<WorkspaceInitResult
     }
   }
 
-  return { path: dir, created, skipped };
+  let wiki: WikiSkeletonResult;
+  try {
+    wiki = await ensureWikiSkeleton(dir);
+  } catch (err) {
+    const done = created.length > 0 ? `；已写入 ${created.join("、")}` : "";
+    throw new WorkspaceError(
+      "WORKSPACE_INIT_FAILED",
+      `初始化失败：无法建立 wiki 骨架（${(err as Error).message}）${done}`,
+      500,
+    );
+  }
+
+  // 旧单文件项目记忆并入 wiki/index.md（best-effort；失败不影响初始化本身）
+  try {
+    const { migrateProjectMemoryToWiki } = await import("./project-memory.js");
+    await migrateProjectMemoryToWiki(dir);
+  } catch {
+    // 迁移失败不回滚；首次读取项目记忆时会再试一次
+  }
+
+  return { path: dir, created, skipped, wiki };
 }
 
 // —— 本机目录浏览（对齐 workspace / 本机目录浏览与选择） ——

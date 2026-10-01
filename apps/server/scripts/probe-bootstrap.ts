@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { agent } from "../src/agent.js";
+import { ensureWorkspaceBinding } from "../src/binding.js";
 import {
   BOOTSTRAP_FILE,
   BOOTSTRAP_FLAG_FILE,
@@ -39,6 +40,8 @@ function check(name: string, ok: boolean, detail = "") {
 
 const q = (p: string) => encodeURIComponent(p);
 const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "oa-bootstrap-")));
+// agent 身份以工作区绑定为准（未绑定不得对话）：探针把临时工作区绑定到默认 agent
+await ensureWorkspaceBinding(dir);
 console.log(`工作区: ${dir}\n`);
 
 // —— HTTP 层：选定目录不写文件 / 初始化幂等 / 状态查询 ——
@@ -247,6 +250,7 @@ let firstReply = "";
 {
   const other = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "oa-bootstrap-skip-")));
   await initWorkspace(other);
+  await ensureWorkspaceBinding(other);
   const reply = await agent
     .invoke(
       {

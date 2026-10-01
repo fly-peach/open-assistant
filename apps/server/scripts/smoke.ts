@@ -19,6 +19,7 @@ import path from "node:path";
 import { ensureWorkspace, getWorkspaceRoot, workspaceTodosPath } from "../src/workspace.js";
 import { readTodos } from "../src/todos.js";
 import { agent } from "../src/agent.js";
+import { ensureWorkspaceBinding } from "../src/binding.js";
 
 const API_URL = process.env.LANGGRAPH_API_URL ?? "http://localhost:2024";
 const ASSISTANT_ID = process.env.ASSISTANT_ID ?? "assistant";
@@ -32,6 +33,8 @@ function check(name: string, ok: boolean, detail = "") {
 
 const client = new Client({ apiUrl: API_URL });
 const dir = await ensureWorkspace(WORKSPACE_DIR);
+// agent 身份以工作区绑定为准（未绑定不得对话）
+await ensureWorkspaceBinding(dir);
 
 // 1. dev server
 try {

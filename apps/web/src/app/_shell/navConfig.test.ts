@@ -75,21 +75,21 @@ describe("核心条目不可隐藏（10.3）", () => {
   });
 
   test("即使配置里被人为写进核心条目，也依然可见", () => {
-    const config = parseNavConfig({ hidden: ["chat", "settings", "cron"] });
+    const config = parseNavConfig({ hidden: ["chat", "settings", "jobs"] });
     const visible = visibleEntries(NAV_ENTRIES, config).map((e) => e.key);
     expect(visible).toContain("chat");
     expect(visible).toContain("settings");
-    expect(visible).not.toContain("cron");
+    expect(visible).not.toContain("jobs");
   });
 
   test("扩展条目可隐藏也可恢复", () => {
-    const config = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "cron");
+    const config = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "jobs");
     expect(visibleEntries(NAV_ENTRIES, config).map((e) => e.key)).not.toContain(
-      "cron"
+      "jobs"
     );
-    const restored = toggleHidden(NAV_ENTRIES, config, "cron");
+    const restored = toggleHidden(NAV_ENTRIES, config, "jobs");
     expect(visibleEntries(NAV_ENTRIES, restored).map((e) => e.key)).toContain(
-      "cron"
+      "jobs"
     );
   });
 });
@@ -108,13 +108,13 @@ describe("排序与持久化载荷（10.4）", () => {
   });
 
   test("隐藏条目不参与相邻移动，但相对次序不乱", () => {
-    const hiddenCron = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "cron");
-    const moved = moveEntry(NAV_ENTRIES, hiddenCron, "memory", -1);
-    const before = orderedKeys(NAV_ENTRIES, hiddenCron).indexOf("memory");
+    const hiddenJobs = toggleHidden(NAV_ENTRIES, DEFAULT_NAV_CONFIG, "jobs");
+    const moved = moveEntry(NAV_ENTRIES, hiddenJobs, "memory", -1);
+    const before = orderedKeys(NAV_ENTRIES, hiddenJobs).indexOf("memory");
     const order = orderedKeys(NAV_ENTRIES, moved);
     // 不复用具体邻居名（导航表会变）：只断言「确实上移了」
     expect(order.indexOf("memory")).toBeLessThan(before);
-    expect(order).toContain("cron");
+    expect(order).toContain("jobs");
   });
 
   test("拖拽落位（moveEntryBefore）插到目标之前", () => {
@@ -157,8 +157,8 @@ describe("排序与持久化载荷（10.4）", () => {
 
 describe("重置只影响导航配置（10.5）", () => {
   test("resetNavConfig 返回默认顺序与显隐", () => {
-    const mess = parseNavConfig({ order: ["memory"], hidden: ["cron", "todos"] });
-    const cronEntry = NAV_ENTRIES.find((entry) => entry.key === "cron");
+    const mess = parseNavConfig({ order: ["memory"], hidden: ["jobs", "todos"] });
+    const cronEntry = NAV_ENTRIES.find((entry) => entry.key === "jobs");
     expect(cronEntry).toBeDefined();
     expect(isHidden(cronEntry!, mess)).toBe(true);
     const reset = resetNavConfig();

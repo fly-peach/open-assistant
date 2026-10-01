@@ -16,6 +16,7 @@ import { FilePreview } from "@/app/components/workspace/FilePreview";
 import { DirectoryPicker } from "@/app/components/workspace/DirectoryPicker";
 import { PathLabel } from "@/app/components/workspace/PathLabel";
 import { WorkspaceInitCard } from "@/app/components/workspace/WorkspaceInitCard";
+import { AgentBindingCard } from "@/app/components/workspace/AgentBindingCard";
 import {
   useWorkspaceContext,
   workspaceErrorText,
@@ -301,6 +302,11 @@ export function WorkspaceSidebar({ onClose }: WorkspaceSidebarProps) {
                 </div>
               </details>
             )}
+          </div>
+
+          {/* 5.4 / 5.5：绑定状态 + 选择/更换入口（未绑定时对话会被阻止） */}
+          <div className="border-b border-border px-3 py-2">
+            <AgentBindingCard workspacePath={workspacePath} />
           </div>
 
           {/* 9.9：选定目录后不写文件，仅在未初始化时展示「初始化」入口 */}

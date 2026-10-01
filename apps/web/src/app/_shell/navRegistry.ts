@@ -7,11 +7,13 @@
  * - `immersive: true` 的页面会隐藏主导航（任务 10.11）。
  */
 import {
+  Bot,
   Brain,
   CalendarClock,
   ListTodo,
   MessagesSquare,
   Settings,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import zh from "@/i18n/zh";
@@ -47,10 +49,10 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     source: "builtin",
   },
   {
-    key: "cron",
-    label: zh.shell.nav.cron,
+    key: "jobs",
+    label: zh.shell.nav.jobs,
     icon: CalendarClock,
-    path: "/cron",
+    path: "/jobs",
     core: false,
     source: "extension",
   },
@@ -59,6 +61,22 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     label: zh.shell.nav.memory,
     icon: Brain,
     path: "/memory",
+    core: false,
+    source: "extension",
+  },
+  {
+    key: "agents",
+    label: zh.shell.nav.agents,
+    icon: Bot,
+    path: "/agents",
+    core: false,
+    source: "extension",
+  },
+  {
+    key: "models",
+    label: zh.shell.nav.models,
+    icon: Sparkles,
+    path: "/models",
     core: false,
     source: "extension",
   },

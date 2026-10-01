@@ -11,6 +11,9 @@ export interface ThreadItem {
   title: string;
   description: string;
   assistantId?: string;
+  /** 创建这条会话时的 agent（换绑后仍可追溯，列表里标注「由 xxx 创建」）。 */
+  agentId?: string;
+  agentName?: string;
 }
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -89,6 +92,22 @@ export function useThreads(props: {
       return threads.map((thread): ThreadItem => {
         let title: string = zh.threadList.untitled;
         let description = "";
+        // 会话归属（design D5）：thread 行上记着 agent_id，列表据此标注创建者。
+        // metadata 是库内行直传的形状；config.configurable 是平台侧 transport 的形状（接缝未接管时可用）。
+        const metadata = (thread.metadata ?? {}) as Record<string, unknown>;
+        const configurable = ((thread.config?.configurable ?? {}) as Record<
+          string,
+          unknown
+        >);
+        const pick = (keys: string[]): string | undefined => {
+          for (const key of keys) {
+            const value = metadata[key] ?? configurable[key];
+            if (typeof value === "string" && value) return value;
+          }
+          return undefined;
+        };
+        const agentId = pick(["agent_id", "agentId"]);
+        const agentName = pick(["agent_name", "agentName"]);
 
         try {
           if (thread.values && typeof thread.values === "object") {
@@ -128,6 +147,8 @@ export function useThreads(props: {
           title,
           description,
           assistantId,
+          agentId,
+          agentName,
         };
       });
     },

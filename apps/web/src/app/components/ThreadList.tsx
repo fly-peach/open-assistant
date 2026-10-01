@@ -20,7 +20,10 @@ import {
 import { cn } from "@/lib/utils";
 import type { ThreadItem } from "@/app/hooks/useThreads";
 import { useThreads } from "@/app/hooks/useThreads";
-import zh from "@/i18n/zh";
+import { useBindingState } from "@/app/hooks/useAgents";
+import { useWorkspaceContext } from "@/providers/WorkspaceProvider";
+import { Bot } from "lucide-react";
+import zh, { t } from "@/i18n/zh";
 
 type StatusFilter = "all" | "idle" | "busy" | "interrupted" | "error";
 
@@ -128,6 +131,16 @@ export function ThreadList({
 }: ThreadListProps) {
   const [currentThreadId] = useQueryState("threadId");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  // 5.6：会话列表标注创建者 —— 与当前绑定不一致的旧会话显示「由 xxx 创建」。
+  const { workspacePath } = useWorkspaceContext();
+  const binding = useBindingState(workspacePath);
+  const currentAgentId = binding.state === "bound" ? binding.agentId : null;
+  const agentLabel = useCallback(
+    (id: string, fallback?: string) =>
+      binding.agents.find((agent) => agent.id === id)?.name || fallback || id,
+    [binding.agents]
+  );
 
   const threads = useThreads({
     status: statusFilter === "all" ? undefined : statusFilter,
@@ -337,6 +350,17 @@ export function ThreadList({
                               />
                             </div>
                           </div>
+                          {thread.agentId && thread.agentId !== currentAgentId && (
+                            <p
+                              className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+                              data-thread-agent={thread.agentId}
+                            >
+                              <Bot size={11} />
+                              {t(zh.threadAgent.createdBy, {
+                                name: agentLabel(thread.agentId, thread.agentName),
+                              })}
+                            </p>
+                          )}
                         </div>
                       </button>
                     ))}

@@ -44,11 +44,19 @@ bun run --cwd apps/server probe:patch   # 上游 role 缺失 bug 的回归探针
 ### 尚未开始（roadmap 后续里程碑）
 
 - **M1/M3 子 agent 系统** —— 最大未做项；**D1（子 agent 独立 checkpoint）仍未 spike**
+- **M2 会话持久化与压缩** —— 见「已知遗留 0」：持久化被平台接管、**压缩完全未实现**（checkpoint 只增不减）
 - M5 cron 、M6 heartbeat + wiki、长期记忆
 - 子 agent 的「同侪互交」按钮语义（用户说待讨论）
 - 前端数据层迁 `@langchain/react` v1；`packages/contracts` 共享类型包（目前类型内联在各自 app）
 
 ### 已知遗留（不影响主流程）
+
+0. **⚠️ 会话存储不在工作区内（spec 与实际不符，已 spike，待定方案）**
+   - spec `session-store` 要求「会话数据落在所属工作区内」「移走工作区不丢历史」；**实际**会话正体在 `apps/server/.langgraph_api/.langgraphjs_api.checkpointer.json`（已 19MB），**所有工作区共用一份**；工作区内只有 `sessions.json` 索引
+   - **Spike 结论（已实做）**：给 `createDeepAgent` 传自己的 `SqliteSaver`（指向 `<工作区>/.open-assistant/checkpoints.sqlite`）**被 langgraph dev 忽略** —— 工作区里的 sqlite **0 字节**，而 server 自己的 19MB 文件照写。图确实跑在 **Node 24** 下（`{isBun:false}`），所以 SqliteSaver 能加载，问题不是原生模块而是**平台接管了持久化**
+   - `langgraph.json` 允许的键为 `graphs / env / dependencies / http / auth / ui / node_version / api_version / store` —— **没有 `checkpointer` / `database` / `persistence` 开关**，dev server 的存储后端不可配置
+   - 附带约束：`better-sqlite3` **在 bun 下完全不可用**（`bun:sqlite` 才是其内置方案），所以 SQLite checkpointer 只能跑在 Node 侧（测试/探针脚本用 bun 跑会报 `ERR_DLOPEN_FAILED`）
+   - 三个待选方向：**① 自托管运行时**（不用 `langgraph dev`，自己用现成的 Hono app 暴露 thread/run/SSE，checkpointer 按工作区开库）—— 推荐，且能一并解决下面的 D1；② 保留 dev server，修 spec 迁就现实；③ 双写：跑在 server 但每次结束后把 messages 导出到工作区（副本）
 
 1. **两处未实测的边角**：`prefers-reduced-motion` 下跳过面板位移动画；面板「收起后重开宽度恢复」（只测了停靠↔浮动）
 2. **上游 bug 绕过**：provider 省略首个 delta 的 `role` → `ChatMessageChunk` → LangGraph `AgentNode` 硬失败（~25% 概率）。已用 `RobustChatOpenAI` 根因修复（见 `apps/server/src/model.ts`），**值得给 `@langchain/openai` 报 issue**
