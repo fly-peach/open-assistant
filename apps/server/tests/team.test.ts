@@ -101,6 +101,47 @@ describe("团队声明解析（对应 subagent-team 装载）", () => {
     expect(member.systemPrompt.trim()).toBe("你是训练助手，只负责训练计划。");
   });
 
+  test("块标量 description（>-）→ valid=true，description 是折叠后的真实文本而不是 \">-\"", () => {
+    // 标准 YAML 块标量：`>-` + 缩进续行。曾经被读成字符串 ">-"、续行被静默丢弃。
+    const folded = [
+      "---",
+      "name: folded",
+      "description: >-",
+      "  负责训练与恢复：周期划分、动作编排、",
+      "  加重策略与伤病规避。",
+      "tools: [ls, read_file]",
+      "---",
+      "你是训练助手。",
+      "",
+    ].join("\n");
+    const member = parseSubAgentSpec(folded, "folded", { dir: "/x/folded", specPath: "/x/folded/SPEC.md" });
+    expect(member.issues).toEqual([]);
+    expect(member.valid).toBe(true);
+    expect(member.description).toBe("负责训练与恢复：周期划分、动作编排、 加重策略与伤病规避。");
+    expect(member.description).not.toBe(">-");
+    // 块标量后面的键照常解析
+    expect(member.tools).toEqual(["ls", "read_file"]);
+    expect(member.systemPrompt.trim()).toBe("你是训练助手。");
+  });
+
+  test("块标量续行不得被当成坏行；真正的坏行仍必须报（含行号）", () => {
+    const literal = "---\nname: a\ndescription: |-\n  第一行\n  第二行\n---\n正文\n";
+    expect(parseSubAgentSpec(literal, "a").valid).toBe(true);
+
+    // 续行之后的真坏行：块标量结束后照旧逐行判定
+    const badAfter = "---\nname: a\ndescription: |-\n  第一行\n这不是键值对\n---\n正文\n";
+    const after = parseSubAgentSpec(badAfter, "a");
+    expect(after.valid).toBe(false);
+    expect(after.issues[0]!.code).toBe("INVALID_FRONTMATTER");
+    expect(after.issues[0]!.message).toContain("第 4 行");
+
+    // 块标量之前的真坏行（行号是 frontmatter 区内的相对行号，与既有语义一致：`---` 之后第 1 行）
+    const badBefore = "---\nname: a\n这不是键值对\ndescription: |-\n  第一行\n---\n正文\n";
+    const before = parseSubAgentSpec(badBefore, "a");
+    expect(before.valid).toBe(false);
+    expect(before.issues[0]!.message).toContain("第 2 行");
+  });
+
   test("缺 description → valid=false，issue 含「缺少路由描述」+ specPath", () => {
     const member = parseSubAgentSpec(spec({ name: "no-desc" }), "no-desc", {
       dir: "/x/no-desc",

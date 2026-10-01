@@ -194,6 +194,12 @@ async function toSubAgentSpec(
 ): Promise<SubAgent> {
   const allowed = resolveSubAgentToolNames(member.tools, runtime.config);
   const model = member.model ? await resolveDeclaredModel(member.model, parentModel) : parentModel;
+  if (member.mode !== "isolated") {
+    console.warn(
+      `[agent] 子 agent「${member.name}」声明 mode=${member.mode}，本版本统一按 isolated 建图：` +
+        "fork 会把父对话一起带过去（token 成本）且上游标 experimental，`handoff` 底层会静默放行（我们已在解析层拒绝）。",
+    );
+  }
   return {
     name: member.name,
     description: member.description,

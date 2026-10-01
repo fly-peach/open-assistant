@@ -48,6 +48,7 @@ import { isValidAgentId, readAgentConfig } from "./registry.js";
 import { statOrNull, writeTextAtomic } from "./json-file.js";
 import {
   frontmatterBlock,
+  isBlockScalarHeader,
   parseFrontmatter,
   renderFrontmatter,
   type FrontmatterValue,
@@ -217,15 +218,31 @@ const MANAGED_KEYS = ["name", "description", "tools", "model", "skills", "mode"]
 
 /**
  * 元数据区里是否有「语法上无法解析」的行（`wiki/frontmatter.ts` 的解析器是容错的，会静默跳过）。
- * 判定规则：非空、非注释、非 `键: 值`、非 `- 列表项` 的行即视为坏行。
+ * 判定规则：非空、非注释、非 `键: 值`、非 `- 列表项`，且**不属于某个块标量的缩进续行**的行即视为坏行。
+ *
+ * 块标量（`description: >-` 之后的缩进续行）是合法 YAML，必须放行；
+ * 但真正的坏行仍必须报出来 —— 所以这里是「进入块标量后只放行更深的缩进行」，一旦回到
+ * 同级 / 更浅的缩进，块结束，后续行照旧逐行判定。
  */
 function findUnparsableLine(block: string): number | null {
   const lines = block.split(/\r?\n/);
+  let blockIndent: number | null = null;
   for (let i = 0; i < lines.length; i += 1) {
-    const trimmed = lines[i]!.trim();
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (blockIndent !== null) {
+      if (trimmed === "") continue;
+      const indent = raw.length - raw.trimStart().length;
+      if (indent > blockIndent) continue;
+      blockIndent = null;
+    }
     if (trimmed === "" || trimmed.startsWith("#")) continue;
     if (/^-\s+/.test(trimmed)) continue;
-    if (/^[A-Za-z0-9_.-]+\s*:/.test(trimmed)) continue;
+    const kv = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(trimmed);
+    if (kv) {
+      if (isBlockScalarHeader(kv[2])) blockIndent = raw.length - raw.trimStart().length;
+      continue;
+    }
     return i + 1;
   }
   return null;
@@ -409,6 +426,9 @@ export function parseSubAgentSpec(
 /** frontmatter 标量渲染：可能被误解析的值加引号（配合 stripQuotes 可无损回读） */
 function renderScalar(value: string): string {
   if (value.length === 0) return '""';
+  // 多行值不能加引号（JSON.stringify 会把换行转义成字面量 \n 而破坏往返），
+  // 原样交给 renderFrontmatter 写成块标量。
+  if (value.includes("\n")) return value;
   if (/^[[\]{}"']/.test(value) || /^[-?*&!|>%@`#]/.test(value) || value.endsWith(":")) {
     return JSON.stringify(value);
   }
