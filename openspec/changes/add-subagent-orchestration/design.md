@@ -182,6 +182,24 @@ Error: invoked agent of type trainer, the only allowed types are `general-purpos
 
 ---
 
+## D3c. 机制选型已定案：原生 `subagents` + `agent.ts` 工厂函数（**原「自研 task 工具中间件」方案作废**）
+
+> **P0 已定案**（用户拍板，2026-10-01）。本节是给后来者的**防误读**说明。
+
+**采用**：deepagents **原生** `subagents` 数组 + 把 `apps/server/src/agent.ts` 的图出口从**对象**改为**工厂函数**（见 D3 落地要求 1）。
+
+**作废**：原设计稿 §7.2 / §7.3 提出的「**自研 `task` 工具中间件**」方案（自己实现委派工具、自己管子 agent 生命周期与结果回流）—— **本变更不采用，已作废**。后人 MUST NOT 照旧方案实现。
+
+**作废理由**：
+
+1. **原生路线无契约冲突**。`02-topology.md` 已实证「改 `subagents` 数组**不属于图拓扑变化**」：子 agent 在 `task` 工具内部被 `subagent.invoke()`，**不参与父图建图**，父图节点/通道 schema 不变，旧 checkpoint 可直接被新图加载，同一 thread 换团队可直接续跑（`02-topology.md` §2、§4、§8）。自研中间件当初的唯一动机是「怕换团队要换会话」——**这个前提已被证伪**。`[实证-02]`
+2. **简单得多**。原生路线只需两处改动：① 解析 `SPEC.md` → 组装 `subagents` 数组（tasks 第 1 节）；② `agent.ts` 改工厂函数（tasks 5.1）。自研中间件则要自己复刻委派工具、结果回流、子会话隔离等一整套语义，且会与 deepagents **必带**的 `wrapToolCall` 中间件栈相互作用（D3b §1 的「快速失败」语义正是这套栈的产物），**引入额外的契约风险**。`[推测]`
+3. **原生路线已被 P0 实证覆盖，自研方案零实证**。上下文隔离（D3b §2）、并行真并发（`01-delegation.md` §2.1–2.2）、结果回流形态（§2.2）、失败语义（§3）这些边界，都已用脚本化模型在原生路线上实测过。`[实证-01]`
+
+**仍然保留的自研部分**（因为底层不提供，见 D3b §1）：子 agent 的**模型层软失败包装**（tasks 5.2）。这不是「自研 `task` 工具」，只是给子 agent 的模型加一层 try/catch 包装，把异常转成一条普通结果。
+
+---
+
 ## D4. 团队管理界面：只编辑三个字段
 
 `SubAgent.description` **就是路由依据**——模型是看着它决定把任务派给谁的。所以 L2 角色层真正要编辑的东西只有：
@@ -223,22 +241,38 @@ Error: invoked agent of type trainer, the only allowed types are `general-purpos
 
 - **节点** = 主 agent（1 个）+ 本轮出现过的子 agent（0..N）
 - **边** = 派发它的那次 tool call（用 `tool_call_id` 做外键，和消息流里的 `task` 调用对齐）
-- **状态** = 进行中 / 成功 / 失败
+- **状态** = 进行中 / 成功 / 失败；**直接映射 SDK 的 `SubagentStatus`**（`pending | running | complete | error`），不自造状态机 `[实证-03 §2v1]`
 - **并行** = 同一条消息里的多个 `task` tool call → 并排的子节点
 - **交互** = 点节点展开该子 agent 的会话；点边高亮对应的 tool call
 
 ---
 
-## D6. 画布数据从哪来（三条路线，按可用性降级）
+## D6. 画布数据从哪来（**已定案：v1 + v2 同源为主，v0 降级兜底**）
 
-| | 数据源 | 能看见 | 状态 |
+> 结论来自 `spike/findings/03-canvas-datasource.md` §2–§3（只读观测，仓库零写入）。
+
+**关键判断**：v1 与 v2 **不是二选一，而是同一条代码路径**。`@langchain/langgraph-sdk@1.12.0`（本项目实际安装版本；`apps/web/package.json:20` 声明 `^1.0.3`）的 React 层 `useStream` 已内置 `subagents` 管理器：同一个管理器既做**实时发现**（v1），又在历史重开时用 `reconstructSubagents` + `fetchSubagentHistory` 自动**重建**（v2）。激活它的开关只有一个：`filterSubagentMessages: true`。`[实证-03 §2v1,§2v2]`
+
+| | 数据源 | 承担 | 结论 |
 |---|---|---|---|
-| **v0** | `task` tool call 派生（前端 `SubAgentPanels` 已有雏形，`ChatMessage.tsx:58-143`） | 发起过哪些子 agent | ✅ 现在就能做 |
-| **v1** | `run.subagents`（`SubagentRunStream` 含 `name / cause / output / messages / toolCalls`，`cause` 即派发它的 tool call） | + 实时状态、与 tool call 精确对齐 | ⚠️ 需确认本项目数据层能否拿到 v3 `streamEvents`（现在走的是 `@langchain/langgraph-sdk` 消息流，**不是** `@langchain/react` v1） |
-| **v2** | 从持久化记录反推（官方 `langgraph-sdk/stream/discovery/namespace-from-history.js` 已有现成实现） | + **历史会话也能复现当时的拓扑** | ⚠️ 需确认与本项目 `sessions.sqlite` 的配合方式 |
+| **主** | `useStream` 的 `subagents`（`SubagentStreamInterface`，`@langchain/langgraph-sdk@1.12.0 dist/ui/types.d.ts:212`） | 实时发现（v1）+ 历史重开自动重建（v2），**同源** | ✅ **采用** |
+| **兜底** | `task` tool call 派生（前端 `ChatMessage.tsx:58-79` 的 `toSubAgents`） | SDK 无该节点时（无 `threadId` / 老轮次 / `subagents` 为空）只能显示 `description` + 最终 output 摘要 | ⚠️ **降级兜底** |
 
-**建议**：**v0 先上**（几乎零成本，把画布骨架和布局跑通），**v1 或 v2 补状态与历史**。
-需求 5（历史可复现）必然要求持久化，因此**拓扑快照要落库**——建议每条 thread 存一份本轮的委派快照（谁派给谁、状态、对应 tool_call_id），画布读它即可，不必每次重放整个事件流。
+**只差两个 option**（本项目现在一个都没设 —— `useChat.ts:59-70` 只传了 `client / reconnectOnMount / fetchStateHistory / onError`）`[实证-03 §2v1]`：
+
+1. **`filterSubagentMessages: true`（必加）**：默认 `false`，此时 `ui/orchestrator.js:102` 把 `undefined` 直接透传，`orchestrator.js:538` 的守卫 `if (!(this.#options.filterSubagentMessages && …)) return null` 命中 → **永远不会构建 subagents 映射**。不设这个开关，v1/v2 都拿不到东西（`ui/types.d.ts:904,1004`）。
+2. **`streamSubgraphs: true`**：默认 `false`，不设则 langgraph 不会把子图 namespace 的 `messages` 事件推给客户端 → 子 agent 节点在**运行中**的会话是空的（状态与结果仍靠 tool message 得到）。要「点节点展开子会话（含运行中）」就必须加（`ui/types.d.ts:935-937`）。
+
+**要改的文件（文件级，见 tasks 第 4 节）**：`useChat.ts:59-70`（加两个 option，**唯一必改的接线路**）、`ChatProvider.tsx`（透出 `subagents / activeSubagents / getSubagent / getSubagentsByMessage`）、`ChatMessage.tsx:58-79`（`toSubAgents` 改为优先取 `getSubagentsByMessage`）、新增画布组件。**零服务端改动**（langgraph dev 的 platform API 本来就返回子图事件，子图 checkpoint 已在内存 saver 里）。`[实证-03 §3]`
+
+**两条必须写死的守卫** `[实证-03 §2v2,§3]`：
+
+- **`namespace` 必须来自 SDK 的 `SubagentStream.namespace`，不能自己拼 `tools:<tool_call_id>`**：子图 `checkpoint_ns` 是 `节点名 + ":" + uuid5(节点名, super-step, task 路径, 父 checkpoint id)`，其中的 uuid **≠ tool_call_id**（`@langchain/langgraph/dist/pregel/algo.cjs:259,264-273`；与 `02-topology.md` §5.2–5.3 的实测一致）。取子会话历史要 `client.threads.getHistory(threadId, { checkpoint: { checkpoint_ns } })`（`api/threads.mjs:118` 的 POST 支持带 ns；**GET 永远强制 `""`**）。
+- **不要自己重写 checkpoint 反推**：SDK 已实现「先按 `${task.name}:${task.id}` 猜、失败则用 push 顺序兜底」的两阶段对齐（`ui/subagents.js` 注释），自己重写只会在**并行 tool call** 的顺序对齐上重新踩坑。
+
+**v0 为什么只能兜底**：子 agent 的会话只存在于子图命名空间；deepagents 的 `task` 工具**不会**把子 agent 的内部消息回灌主图 —— `returnCommandWithStateUpdate()` 返回的 `Command.update` 把 `messages` 覆写成**单条 ToolMessage（子 agent 最后一段文本）**，且 `filterStateForSubagent` 的 `EXCLUDED_STATE_KEYS` 显式排除 `"messages"`。所以 v0 只能显示 input/output 摘要，**结构性地做不到**「点节点展开子会话」。`[实证-03 §1,§2v0]`
+
+**拓扑快照仍要落库**（见 tasks 第 3 节）：v1/v2 解决「看得见 + 历史能重建」，但 checkpoint 是 `InMemorySaver` + JSON 快照、**不是数据库**（无索引/无查询，清理时可能丢），且「团队里删掉某子 agent 后旧 thread 会持续报错」（`02-topology.md` CASE B/C）使旧轮次**不可重放**。因此每条 thread 落一份本轮委派快照（`delegations` 表），画布读它做「拓扑冻结 + 跨会话列表/审计」，checkpoint 只作**内容源**。`[实证-03 §3,§4]`
 
 ---
 
@@ -282,8 +316,9 @@ Error: invoked agent of type trainer, the only allowed types are `general-purpos
 
 ## Risks
 
-- **[团队变更是否换会话，仍未知]** → D3 的 spike 是 P0；需求写成「行为必须被明确定义」而非赌某一边。
-- **[只读画布的数据源可能拿不到实时状态]** → D6 的三级降级；v0 已足够回答「谁被派了活」。
+- **[团队变更是否换会话]** → ✅ **已判定（D3）**：改 `subagents` 不算图拓扑变化，同一会话可直接续用新团队；唯一真实边界是「pending task 指向被删/改名的子 agent」，由 tasks 5.9 兜底。
+- **[只读画布的数据源]** → ✅ **已判定（D6）**：v1 + v2 同源（`filterSubagentMessages: true` + `streamSubgraphs: true` 两个 option），v0 降级兜底。剩余 `[推测]` 只有「`streamSubgraphs` 在 langgraph dev 下对子图 `messages` 事件的实际效果」需一次探针确认（`03-canvas-datasource.md` 附「未确认项」）。
+- **[机制选型]** → ✅ **已定案（D3c）**：采用 deepagents 原生 `subagents` + `agent.ts` 工厂函数；原「自研 `task` 工具中间件」方案作废。
 - **[子 agent 默认不继承技能]** `[实证-03报告]`：自定义子 agent 默认拿不到主 agent 的技能 → 若要给子 agent 技能，必须在 `SPEC.md` 里显式声明（本变更在 spec 里写成显式字段）。
 - **[`@xyflow/react` 的 zustand 4/5 共存问题]** issue #5685 未关闭 → 只读画布若不需撤销，**可以不引 `zundo`**，减少一处风险。
 - **[画布在窄屏的可用性]** → 只读画布建议提供「图 / 列表」两种视图切换，列表视图是兜底。

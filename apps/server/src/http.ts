@@ -19,6 +19,10 @@
  * - GET  /agents/{id}/memory               → { content }
  * - PUT  /agents/{id}/memory               body { content } → { ok: true }
  * - GET  /agents/{id}/skills               → { skills: [{ name, description }] }
+ * - GET  /agents/{id}/team                 → 子 agent 团队视图 { agentId, dir, teamDir, exists, toolCatalog, members }
+ * - POST /agents/{id}/team                 body { name, description, systemPrompt? } → { name }
+ * - GET  /agents/{id}/team/{name}          → { member }
+ * - PUT  /agents/{id}/team/{name}          body { description?, tools?, model?, skills?, mode?, systemPrompt? } → { name, member }
  * - GET  /workspace/binding?path=<ws>      工作区绑定视图（未绑定 → agentId: null）
  * - PUT  /workspace/binding                body { path, agentId, mode: "keep"|"archive" } → { agentId }
  * - GET  /memory/project?path=<ws>         项目记忆（返回 wiki/index.md 内容）
@@ -92,6 +96,7 @@ import {
   readMemoryFile,
   writeCoreMemory,
 } from "./agents/memory.js";
+import { createSubAgent, listTeam, readSubAgent, updateSubAgent } from "./agents/team.js";
 import {
   channelFieldsFor,
   deleteChannelView,
@@ -398,6 +403,42 @@ app.delete("/agents/:id/channels/:key", async (c) => {
 app.get("/agents/:id/skills", async (c) => {
   const def = await readAgent(c.req.param("id"));
   return c.json({ skills: def.skills.map((s) => ({ name: s.name, description: s.description })) });
+});
+
+// —— 子 agent 团队（specs/subagent-team）——
+//
+// 契约见 `spike/findings/04-team-page.md` §3.2（**前端按同一份契约并行实现，形状不要改**）：
+// ① 列表：非法声明照样进 `members`，用 `valid:false` + `issues` 标注（不拖垮整体加载）；
+// ② 更新：合并 = 当前 frontmatter ⊕ patch，**整体校验通过才写**（原子写，失败一个字节都不动）；
+// ③ 新建：description 必填（它是路由依据），骨架里**不写** tools/model/skills（保持「未声明 = 继承」）。
+// 错误码：AGENT_NOT_FOUND / SUBAGENT_INVALID_ID / SUBAGENT_ALREADY_EXISTS /
+//         SUBAGENT_NOT_FOUND / SUBAGENT_INVALID_SPEC（带 field），由 onError 统一出口。
+
+app.get("/agents/:id/team", async (c) => {
+  return c.json(await listTeam(c.req.param("id")));
+});
+
+app.get("/agents/:id/team/:name", async (c) => {
+  const member = await readSubAgent(c.req.param("id"), c.req.param("name"));
+  return c.json({ member });
+});
+
+app.post("/agents/:id/team", async (c) => {
+  const raw = await c.req.json().catch(() => ({}));
+  const body = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const name = await createSubAgent(c.req.param("id"), {
+    name: body["name"],
+    description: body["description"],
+    systemPrompt: body["systemPrompt"],
+  });
+  return c.json({ name });
+});
+
+app.put("/agents/:id/team/:name", async (c) => {
+  const raw = await c.req.json().catch(() => ({}));
+  const body = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const member = await updateSubAgent(c.req.param("id"), c.req.param("name"), body);
+  return c.json({ name: member.name, member });
 });
 
 // —— 工作区绑定（tasks 1.9–1.12）——

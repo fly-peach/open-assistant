@@ -144,7 +144,9 @@ async function ask(text: string): Promise<{ reply: string; messages: unknown[]; 
     }
   }
   history = [...history, { role: "user", content: text }];
-  const result = await agent.invoke(
+  // 图出口是工厂函数：先按当次 config 建图，再 invoke（见 src/agent.ts 文件头）
+  const graph = await agent({ configurable: { workspace: dir, thread_id: "probe-bootstrap" } });
+  const result = await graph.invoke(
     { messages: history },
     { configurable: { workspace: dir, thread_id: "probe-bootstrap" } },
   );
@@ -251,7 +253,9 @@ let firstReply = "";
   const other = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "oa-bootstrap-skip-")));
   await initWorkspace(other);
   await ensureWorkspaceBinding(other);
-  const reply = await agent
+  const reply = await (
+    await agent({ configurable: { workspace: other, thread_id: "probe-bootstrap-skip" } })
+  )
     .invoke(
       {
         messages: [

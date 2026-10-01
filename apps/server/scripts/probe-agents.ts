@@ -128,7 +128,10 @@ async function ask(workspace: string, text: string, agentId?: string): Promise<{
   }
   const key = `${workspace}::${agentId ?? ""}`;
   const history = [...(histories.get(key) ?? []), { role: "user", content: text }];
-  const result = await agent.invoke(
+  const runConfig = { configurable: { ...configurable, thread_id: `probe-agents-${Buffer.from(key).toString("hex").slice(0, 12)}` } };
+  // 图出口是工厂函数：先按当次 config 建图，再 invoke（见 src/agent.ts 文件头）
+  const graph = await agent(runConfig);
+  const result = await graph.invoke(
     { messages: history },
     { configurable: { ...configurable, thread_id: `probe-agents-${Buffer.from(key).toString("hex").slice(0, 12)}` } },
   );

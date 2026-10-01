@@ -77,7 +77,9 @@ async function runViaServer(): Promise<boolean> {
 
 async function runInProcess(): Promise<boolean> {
   try {
-    await agent.invoke(
+    // 图出口是工厂函数：先按当次 config 建图，再 invoke（见 src/agent.ts 文件头）
+    const graph = await agent({ configurable: { workspace: WORKSPACE_DIR } });
+    await graph.invoke(
       { messages: [{ role: "user", content: prompt }] },
       { configurable: { workspace: WORKSPACE_DIR } },
     );

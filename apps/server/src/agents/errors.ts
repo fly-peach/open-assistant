@@ -9,7 +9,15 @@ export type AgentErrorCode =
   | "AGENT_ALREADY_EXISTS"
   | "AGENT_NOT_FOUND"
   | "AGENT_INVALID_CONFIG"
-  | "AGENT_NOT_BOUND";
+  | "AGENT_NOT_BOUND"
+  /** 子 agent 目录名非法（对齐 specs/subagent-team「拒绝非法子 agent 标识」） */
+  | "SUBAGENT_INVALID_ID"
+  /** 同名子 agent 目录已存在 */
+  | "SUBAGENT_ALREADY_EXISTS"
+  /** 该子 agent 不存在（无目录 / 无 SPEC.md） */
+  | "SUBAGENT_NOT_FOUND"
+  /** 声明内容非法（缺 description / mode 非法 / 工具名未知 / 元数据无法解析等），`field` 指向具体字段 */
+  | "SUBAGENT_INVALID_SPEC";
 
 export class AgentError extends Error {
   readonly code: AgentErrorCode;

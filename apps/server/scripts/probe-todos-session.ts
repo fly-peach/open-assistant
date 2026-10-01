@@ -22,7 +22,9 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 async function session(content: string) {
-  const result: any = await agent.invoke(
+  // 图出口是工厂函数：先按当次 config 建图，再 invoke（见 src/agent.ts 文件头）
+  const graph = await agent({ configurable: { workspace: WS } });
+  const result: any = await graph.invoke(
     { messages: [{ role: "user", content }] },
     { configurable: { workspace: WS } },
   );

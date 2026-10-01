@@ -22,6 +22,7 @@ import {
   type AgentsRoot,
 } from "@/lib/agentsApi";
 import { listJobs, type JobSpec } from "@/lib/jobsApi";
+import { getTeam, type TeamView } from "@/lib/teamApi";
 import { deriveBindingState, type BindingView } from "@/app/utils/agentConfig";
 
 export function useAgents() {
@@ -116,5 +117,20 @@ export function useProjectMemory(workspace: string | null) {
   return useSWR<string>(
     workspace ? `/memory/project?path=${workspace}` : null,
     () => getProjectMemory(workspace as string)
+  );
+}
+
+/**
+ * 某个智能体的子 agent 团队（任务 2.1）。
+ *
+ * 与 `useAgentMemoryTree` 同款：`revision` 参与 key（刷新 / 写完后自增），
+ * `shouldRetryOnError: false` 避免后端未就绪时无限重试刷屏，
+ * `keepPreviousData` 让保存后的刷新不闪空列表。
+ */
+export function useTeam(agentId: string | null, revision = 0) {
+  return useSWR<TeamView>(
+    agentId ? [`/agents/${agentId}/team`, revision] : null,
+    () => getTeam(agentId as string),
+    { revalidateOnFocus: false, shouldRetryOnError: false, keepPreviousData: true }
   );
 }

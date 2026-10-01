@@ -61,14 +61,16 @@ function extractAssistantText(result: unknown): string {
 /**
  * 默认执行器。agent 任务才真正调用图；文本任务不会走到这里（runner 直接返回文本）。
  * 动态 import `../agent.js` 是为了让不碰模型的测试 / 校验代码不必加载模型配置。
+ *
+ * 注意：`../agent.js` 导出的是**工厂函数**（每次 run 用当次 config 求值一次，
+ * 团队声明因此能在改完后生效；见 `src/agent.ts` 文件头）。所以这里必须先建图再 invoke。
  */
 export const defaultJobExecutor: JobExecutor = async (
   ctx: JobExecutionContext,
 ): Promise<JobExecutionResult> => {
   const { agent } = await import("../agent.js");
-  const result = await agent.invoke(
-    { messages: [{ role: "user", content: ctx.prompt }] },
-    { configurable: { workspace: ctx.workspace } },
-  );
+  const config = { configurable: { workspace: ctx.workspace } };
+  const graph = await agent(config);
+  const result = await graph.invoke({ messages: [{ role: "user", content: ctx.prompt }] }, config);
   return { content: extractAssistantText(result) };
 };

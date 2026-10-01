@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BookOpen, Loader2, Save } from "lucide-react";
+import { ArrowLeft, BookOpen, Loader2, Save, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -164,7 +164,22 @@ export default function AgentConfigPage() {
           <BookOpen size={13} />
           {zh.agents.openMemory}
         </Link>
+        {/* 团队（子 agent）管理是同级子路由，不是这一页的 tab（任务 2.1 的入口） */}
+        <Link
+          href={`/agents/${encodeURIComponent(id ?? "")}/team`}
+          prefetch={false}
+          className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          data-agent-team-link
+        >
+          <Users size={13} />
+          {zh.team.linkFromAgent}
+        </Link>
       </header>
+
+      {/* 团队变更的生效边界（任务 6.5）：如实说明，不承诺「立刻生效」 */}
+      <p className="mt-2 max-w-3xl text-[11px] text-muted-foreground" data-agent-team-hint>
+        {zh.team.agentPageHint}
+      </p>
 
       {error && (
         <p

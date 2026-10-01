@@ -24,12 +24,26 @@ import {
   type ChannelView,
 } from "@/lib/channelsApi";
 import zh, { t } from "@/i18n/zh";
+import {
+  channelStateOf,
+  channelStateStyle,
+  groupChannels,
+  type ChannelState,
+} from "@/app/utils/channelState";
 
 interface Draft {
   config: Record<string, string | number | boolean>;
   /** 只放用户**改过**的凭据；空串表示清除 */
   secrets: Record<string, string>;
   enabled: boolean;
+}
+
+/** 状态的文字标签（只有它依赖 i18n，所以留在这里；判据本身在 utils/channelState.ts） */
+function stateLabelOf(view: ChannelView): string {
+  const state: ChannelState = channelStateOf(view);
+  if (state === "not-configured") return zh.channels.stateNotConfigured;
+  if (state === "enabled") return zh.channels.stateEnabled;
+  return zh.channels.stateConfigured;
 }
 
 function draftOf(view: ChannelView): Draft {
@@ -133,6 +147,12 @@ export function ChannelSection({ agentId }: { agentId: string }) {
     void reload();
   }, [reload]);
 
+  /** 已配置 = 必填齐全；未配置 = 其余（含已添加但没填完的 + 目录里还没加的） */
+  const { configured, unconfigured } = useMemo(
+    () => groupChannels(list.configured, list.available),
+    [list.configured, list.available],
+  );
+
   const allViews = useMemo(
     () => [...list.configured, ...list.available],
     [list.configured, list.available],
@@ -219,7 +239,7 @@ export function ChannelSection({ agentId }: { agentId: string }) {
     [agentId, reload],
   );
 
-  const renderRow = (view: ChannelView, configured: boolean) => {
+  const renderRow = (view: ChannelView, added: boolean) => {
     const open = expanded === view.key;
     const draft = draftFor(view.key);
     const fields = list.fields[view.key] ?? [];
@@ -236,26 +256,36 @@ export function ChannelSection({ agentId }: { agentId: string }) {
       >
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <span
-              className="inline-block h-2 w-2 shrink-0 rounded-full"
-              style={{
-                backgroundColor: view.enabled ? "var(--color-success)" : "var(--color-text-tertiary)",
-              }}
-              aria-hidden
-            />
             <span className="truncate text-sm font-medium">{view.label}</span>
             <span className="shrink-0 rounded bg-[var(--color-surface)] px-1.5 py-0.5 text-[10px] text-muted-foreground">
               {view.builtin ? zh.channels.builtinTag : zh.channels.customTag}
             </span>
+            {/*
+              状态**用文字说清**（未配置 / 已配置 / 已启用），不只靠颜色：
+              - 判据是「必填是否齐全」，不是「有没有被添加过」——
+                必填没齐的频道出现在「已配置」里会跟它「打不开」的事实自相矛盾
+              - 这里说的是**配置状态**，不是连接健康：运行时还没去连接，
+                展示连接状态就等于撒谎（见 spec「不假装有连接」）
+            */}
+            <span
+              data-channel-state={channelStateOf(view)}
+              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+              style={{
+                color: channelStateStyle(channelStateOf(view)).color,
+                backgroundColor: channelStateStyle(channelStateOf(view)).background,
+              }}
+            >
+              {stateLabelOf(view)}
+            </span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {configured && (
+            {added && (
               <>
                 <Switch
                   data-channel-toggle={view.key}
                   aria-label={t(zh.channels.toggleAria, { name: view.label })}
                   checked={draft.enabled}
-                  disabled={busy}
+                  disabled={busy || view.missing.length > 0}
                   onCheckedChange={(next) => {
                     patchDraft(view.key, { enabled: next });
                     void submit(view.key, next);
@@ -274,7 +304,7 @@ export function ChannelSection({ agentId }: { agentId: string }) {
                 </Button>
               </>
             )}
-            {!configured && (
+            {!added && (
               <Button
                 type="button"
                 variant="outline"
@@ -294,13 +324,13 @@ export function ChannelSection({ agentId }: { agentId: string }) {
           {zh.channels.prefixLabel}：{String(draft.config["bot_prefix"] ?? "").trim() || zh.channels.notSet}
         </p>
 
-        {configured && view.missing.length > 0 && (
+        {added && view.missing.length > 0 && (
           <p className="mt-1 text-[11px] text-[var(--color-warning)]" data-channel-missing={view.key}>
             {t(zh.channels.missingHint, { fields: missingLabels })}
           </p>
         )}
 
-        {open && configured && (
+        {open && added && (
           <div className="mt-3 space-y-3 border-t border-border-light pt-3">
             {fields.map((field) => (
               <FieldControl
@@ -363,20 +393,25 @@ export function ChannelSection({ agentId }: { agentId: string }) {
       )}
 
       <h3 className="mt-3 text-xs font-semibold text-muted-foreground">
-        {t(zh.channels.configuredTitle, { count: list.configured.length })}
+        {t(zh.channels.configuredTitle, { count: configured.length })}
       </h3>
-      {list.configured.length === 0 ? (
+      {configured.length === 0 ? (
         <p className="mt-1 text-xs text-muted-foreground" data-channels-configured-empty>
           {zh.channels.configuredEmpty}
         </p>
       ) : (
-        <div className="mt-2 grid gap-2">{list.configured.map((v) => renderRow(v, true))}</div>
+        <div className="mt-2 grid gap-2">{configured.map((v) => renderRow(v, true))}</div>
       )}
 
-      {list.available.length > 0 && (
+      {unconfigured.length > 0 && (
         <>
-          <h3 className="mt-4 text-xs font-semibold text-muted-foreground">{zh.channels.availableTitle}</h3>
-          <div className="mt-2 grid gap-2">{list.available.map((v) => renderRow(v, false))}</div>
+          <h3 className="mt-4 text-xs font-semibold text-muted-foreground" data-channels-unconfigured-title>
+            {t(zh.channels.unconfiguredTitle, { count: unconfigured.length })}
+          </h3>
+          <div className="mt-2 grid gap-2">
+            {/* 已添加但必填没齐的排在前面（用户刚点过它，别让它跳位置） */}
+            {unconfigured.map(([view, added]) => renderRow(view, added))}
+          </div>
         </>
       )}
     </section>

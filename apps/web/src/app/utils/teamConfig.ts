@@ -115,7 +115,12 @@ export function memberPayload(draft: MemberDraft): SubAgentPatch {
   };
 }
 
-/** 草稿是否有未保存改动（纯函数，供卡片显示「有未保存的改动」与 `data-*`）。 */
+/**
+ * 草稿是否有未保存改动（纯函数，供卡片显示「有未保存的改动」与 `data-*`）。
+ *
+ * 工具清单按**集合**比较（排序后对比）：顺序不是语义，
+ * 后端拿到的是一个白名单，换个顺序不该被当成「改过了」。
+ */
 export function draftsEqual(left: MemberDraft, right: MemberDraft): boolean {
   return (
     left.description === right.description &&
@@ -123,9 +128,38 @@ export function draftsEqual(left: MemberDraft, right: MemberDraft): boolean {
     left.model === right.model &&
     left.toolsMode === right.toolsMode &&
     (left.toolsMode === "inherit" ||
-      normalizeToolSelection(left.tools).join("\u0000") ===
-        normalizeToolSelection(right.tools).join("\u0000"))
+      toolsKeyOf(left.tools) === toolsKeyOf(right.tools))
   );
+}
+
+/** 工具集合的规范键（排序 + 去重 + 丢空串），只用于比较，不用于提交。 */
+function toolsKeyOf(list: readonly string[]): string {
+  return [...normalizeToolSelection(list)].sort().join("\u0000");
+}
+
+/** 下拉里的分组形状（与 `groupModelsByProvider` 的返回结构兼容，避免页面反向依赖组件）。 */
+export interface TeamModelGroup {
+  providerId: string;
+  providerName: string;
+  models: { id: string; name: string; vision: boolean | null }[];
+}
+
+/**
+ * 模型下拉触发器上显示的名字：清单里找得到就显示清单名，
+ * 找不到（老声明 / 清单里已删）就退回原始 id —— 不谎报一个「看起来对」的模型。
+ */
+export function modelOptionLabel(
+  value: string,
+  groups: readonly TeamModelGroup[]
+): string {
+  const raw = parseModelValue(value);
+  if (!raw) return "";
+  const separator = raw.indexOf("::");
+  if (separator <= 0) return raw;
+  const providerId = raw.slice(0, separator);
+  const modelId = raw.slice(separator + 2);
+  const group = groups.find((item) => item.providerId === providerId);
+  return group?.models.find((item) => item.id === modelId)?.name ?? modelId;
 }
 
 /* ------------------------------------------------------------ 工具目录 */
