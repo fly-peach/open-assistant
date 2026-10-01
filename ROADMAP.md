@@ -42,7 +42,7 @@
 | `project-wiki` | ✅ | 索引 / 知识图谱（边抽取·声明式 relations·全量重建）/ 归档 / lint |
 | `channels` | 🟡 12/56 | 字段类型系统 / 目录 / 凭据库（掩码）/ 有界去重 / 退避 / **QQ 网关客户端（离线测通）**；飞书与运行时接线未做 |
 | `channels-ui` | 🟡 22/29 | 配置区块长在智能体配置页 / 字段驱动表单 / 掩码 / 配置状态（未配置·已配置·已启用） |
-| `agent-skills` | 🟡 4/14 | 技能装载与渐进披露 |
+| `agent-skills` | 🟡 0/6 | 元信息扫描已可用；渐进披露 / 读取工具 / 共享池 / 启停**全未做**（见 M9） |
 | `multi-agent-comms` | 🟡 6/20 | 同侪互交（进行中，见 `add-subagent-orchestration`） |
 | `session-store` / `todo-store` / `workspace` | — | 本次变更对它们的增量（大部分未开始） |
 
@@ -479,6 +479,48 @@ HeartbeatConfig {
 - [ ] wiki 浏览（index 树 + 页渲染 + 图谱可选）
 - [ ] 文件树 + `SCHEMA.md` / `AGENTS.md` 编辑
 - [ ] 技能/子 agent 管理（含**同侪互交按钮**）
+
+---
+
+### M9 · 技能系统（1 周）→ 让助手「会做事」而不只是「会说话」
+
+技能的载体是**目录 + `SKILL.md`**，沿用 Anthropic Agent Skills 约定（**design D8**，qwenpaw 同样）：
+
+```
+<agents 根>/<agent-id>/skills/
+└── docx/
+    ├── SKILL.md          # frontmatter: name / description / 可选 tools
+    ├── scripts/          # 可选
+    └── references/       # 可选
+
+<agents 根>/_shared/skills/   # 共享池：多个 agent 可复用；同名时 agent 自己的优先
+```
+
+**核心是渐进披露三层**（`[实证]` design D8）：
+
+1. system prompt 里**只放** `name` + `description`（每技能一行，几十 token）
+2. agent 判断需要时调 `skill_read(name)` 读 `SKILL.md` 全文
+3. `SKILL.md` 里引用的 `references/*` 再按需读
+
+**为什么不一次性把技能全文塞进 prompt**：技能一多就爆上下文。渐进披露既可测（能断言 prompt 里只有描述），
+又是官方推荐做法 —— 所以它可以写成断言而不是靠自觉。
+
+**现状**：目录骨架（tasks 1.2）与**元信息扫描**（`apps/server/src/agents/skills.ts`）已落地，
+`GET /agents/{id}` 契约里的 `skills: [{ name, description }]` 已能返回，配置页也按「只有名称与描述」展示。
+**其余全部未做**（tasks 8.1–8.6，0/6）。
+
+- [ ] 8.1 技能目录扫描与元信息解析；**残缺技能要标注而不是拖垮整份加载**
+- [ ] 8.2 渐进披露：上下文只注入名称与描述，并断言**注入内容不含技能正文**
+- [ ] 8.3 读取技能正文与引用资料的工具（`skill_list` / `skill_read`），真实会话验证「按需读取并据此执行」
+- [ ] 8.4 私有技能 + 共享池 + **同名优先级**（agent 自己的覆盖共享池），断言覆盖行为与可见范围
+- [ ] 8.5 按 agent 启停技能，断言**只影响该 agent**
+- [ ] 8.6 规模断言：技能数量增长时，固定注入的上下文长度**只随数量线性增长**（不随正文长度增长）
+
+**Exit**：给一个 agent 装 20 个技能，上下文占用不塌；关掉某个技能不影响别人；
+半成品技能不会让整个列表加载失败；agent 能自己找到并读懂一个没见过的技能。
+
+**待定**：技能的来源除了「本地目录」，要不要支持**从远端安装**（像 pi 的 `skill add`）。
+先不做 —— 本地目录已经能覆盖自用场景，而远端安装会立刻带出版本、更新、鉴权一串问题。
 
 ---
 
