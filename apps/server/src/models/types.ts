@@ -67,6 +67,10 @@ export interface ModelView {
   vision: boolean | null;
   /** 这个结论是谁给的：manual > probe > catalog > unknown */
   visionSource: CapabilitySource;
+  /** 上下文窗口（tokens）；null = 未知。用于上下文压缩的触发/保留阀值 */
+  contextWindow: number | null;
+  /** 窗口数字是谁给的：manual > catalog > unknown */
+  contextWindowSource: CapabilitySource;
   /** 探针最后一次跑的时间（ISO），没探测过则缺省 */
   probedAt?: string;
 }
@@ -93,6 +97,8 @@ export interface ModelsFile {
   defaultModelId?: string;
   /** 能力位缓存，键是 `${providerId}::${modelId}` */
   capabilities: Record<string, CapabilityRecord>;
+  /** 手工指定的上下文窗口（tokens），键同上；缺省时用内置清单先验 */
+  contextWindows: Record<string, number>;
 }
 
 /** 运行期真正要用的东西：怎么连、连哪个模型 */
@@ -103,6 +109,8 @@ export interface ResolvedModelConfig {
   baseUrl: string;
   apiKey: string;
   vision: boolean | null;
+  /** 上下文窗口（tokens）；null = 未知（则上下文压缩退回上游默认阈值） */
+  contextWindow: number | null;
   /** 这个解析结果的来源，便于在界面上说明「为什么现在是它」 */
   origin: "agent" | "default" | "env";
 }

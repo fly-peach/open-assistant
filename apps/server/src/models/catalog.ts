@@ -68,6 +68,8 @@ export interface BuiltinModel {
   name: string;
   /** true=确定支持图像输入；false=确定不支持；null=不确定，交给探测 */
   vision: boolean | null;
+  /** 上下文窗口（tokens）先验；拿不准就不写（界面显示「未知」，由用户指定） */
+  contextWindow?: number;
   note?: string;
 }
 
@@ -76,11 +78,12 @@ export interface BuiltinModel {
  */
 export const BUILTIN_MODELS: Record<string, BuiltinModel[]> = {
   deepseek: [
-    { id: "deepseek-chat", name: "DeepSeek Chat", vision: false },
-    { id: "deepseek-reasoner", name: "DeepSeek Reasoner", vision: false },
+    { id: "deepseek-chat", name: "DeepSeek Chat", vision: false, contextWindow: 65536 },
+    { id: "deepseek-reasoner", name: "DeepSeek Reasoner", vision: false, contextWindow: 65536 },
   ],
   "ali-tokenplan": [
     // token-plan 上跑的是 DeepSeek 系列；是否有视觉能力尚无公开结论 → 交给探测
+    // 上下文窗口也没有公开数字 → 不写先验，由用户在「模型」页指定
     { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", vision: null, note: "项目原本的默认模型" },
   ],
   aliyun: [

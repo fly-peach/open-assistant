@@ -64,6 +64,7 @@
  * - PUT    /models/default                 设全局默认模型 body { providerId, modelId }
  * - POST   /models/capability/probe        跑视觉探针 body { providerId, modelId } → { vision, attempts, ... }
  * - PUT    /models/capability              手动指定能力位 body { providerId, modelId, vision }
+ * - PUT    /models/context-window          手动指定上下文窗口 body { providerId, modelId, contextWindow|null }
  * - DELETE /models/capability              清掉能力位 body { providerId, modelId }
  * - GET    /models/selection?path=<ws>     该工作区这轮会用的模型（对话页顶部下拉用）
  * - PUT    /models/selection               把选中模型写进绑定 agent 的 config.json
@@ -97,6 +98,7 @@ import {
   probeModelCapability,
   setDefaultModel,
   setModelCapability,
+  setModelContextWindow,
   setSelection,
   testProvider,
   upsertProvider,
@@ -1126,6 +1128,23 @@ app.delete("/models/capability", async (c) => {
   }
   await clearModelCapability(body.providerId, body.modelId);
   return c.json({ ok: true });
+});
+
+/** 手工指定 / 清除模型的上下文窗口（tokens）—— 上下文压缩的阀值依据 */
+app.put("/models/context-window", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    providerId?: unknown;
+    modelId?: unknown;
+    contextWindow?: unknown;
+  };
+  if (typeof body.providerId !== "string" || typeof body.modelId !== "string") {
+    return c.json(
+      { error: "MODEL_INVALID_CONFIG", message: "请求体必须包含 providerId 与 modelId", field: "modelId" },
+      400,
+    );
+  }
+  const value = body.contextWindow === null ? null : Number(body.contextWindow);
+  return c.json(await setModelContextWindow(body.providerId, body.modelId, value));
 });
 
 // 对话页顶部「模型」下拉：读当前工作区这轮真正会用的模型

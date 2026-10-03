@@ -24,6 +24,7 @@ import {
   clearCapability,
   probeCapability,
   setCapability,
+  setModelContextWindow,
   type ModelView,
   type ProbeOutcome,
 } from "@/lib/modelsApi";
@@ -42,8 +43,27 @@ export interface ModelRowProps {
 }
 
 export function ModelRow({ model, isDefault, onSetDefault, onRefresh, onRemove }: ModelRowProps) {
-  const [busy, setBusy] = useState<"probe" | "default" | "capability" | "remove" | null>(null);
+  const [busy, setBusy] = useState<"probe" | "default" | "capability" | "remove" | "window" | null>(null);
   const [probe, setProbe] = useState<ProbeOutcome | null>(null);
+
+  /** 保存上下文窗口（空串 = 清除，回到内置先验 / 未知） */
+  async function saveWindow(raw: string) {
+    const value = raw.trim() === "" ? null : Number(raw);
+    if (value !== null && (!Number.isFinite(value) || value <= 0)) {
+      toast.error(zh.models.contextWindowInvalid);
+      return;
+    }
+    if (value === model.contextWindow) return;
+    setBusy("window");
+    try {
+      await setModelContextWindow(model.providerId, model.id, value);
+      await onRefresh();
+    } catch (err) {
+      toast.error(t(zh.models.contextWindowFailed, { error: messageOf(err) }));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function runProbe() {
     setBusy("probe");
@@ -103,6 +123,37 @@ export function ModelRow({ model, isDefault, onSetDefault, onRefresh, onRemove }
                 : model.source === "remote"
                   ? zh.models.sourceRemote
                   : zh.models.sourceManual}
+            </span>
+            {/* 上下文窗口：上下文压缩的阀值依据（触发 80% / 保留 10%） */}
+            <span
+              className="inline-flex items-center gap-1"
+              title={zh.models.contextWindowHint}
+              data-model-context-window
+            >
+              <span>{zh.models.contextWindowLabel}：</span>
+              <input
+                type="number"
+                min={1000}
+                step={1024}
+                defaultValue={model.contextWindow ?? ""}
+                placeholder={zh.models.contextWindowPlaceholder}
+                aria-label={zh.models.contextWindowLabel}
+                disabled={busy !== null}
+                onBlur={(event) => void saveWindow(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+                }}
+                className="w-24 rounded border border-border bg-background px-1 py-0.5 text-[11px]"
+              />
+              {model.contextWindow === null ? (
+                <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                  {zh.models.contextWindowUnknown}
+                </span>
+              ) : model.contextWindowSource === "catalog" ? (
+                <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                  {zh.models.contextWindowBuiltin}
+                </span>
+              ) : null}
             </span>
           </div>
         </div>

@@ -21,6 +21,7 @@ import { invalidateModelResolution } from "./middleware.js";
 import { PROBE_MAX_FAILURES, probeVision, type VisionProbeResult } from "./probe.js";
 import {
   capabilityFor,
+  contextWindowFor,
   listModelViews,
   resolveEffectiveModel,
   toProviderView,
@@ -395,6 +396,37 @@ export async function clearModelCapability(providerId: string, modelId: string):
   await save(file);
 }
 
+/**
+ * 手工指定 / 清除某个模型的**上下文窗口**（tokens）。
+ *
+ * 它决定上下文压缩的触发与保留阀值（见 `agent.ts` 的 summarization 中间件）：
+ * 触发 = `0.8 × 窗口`、保留 = `0.1 × 窗口`。传 `null` 清除（回到内置先验 / 未知）。
+ */
+export async function setModelContextWindow(
+  providerId: string,
+  modelId: string,
+  contextWindow: number | null,
+): Promise<{ contextWindow: number | null; source: string }> {
+  const file = await readModelsFile();
+  findProvider(file, providerId);
+  const key = capabilityKey(providerId, modelId);
+  if (contextWindow === null) {
+    delete file.contextWindows[key];
+  } else {
+    if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+      throw new ModelError(
+        "MODEL_INVALID_CONFIG",
+        "contextWindow 必须是正整数（tokens）",
+        400,
+        "contextWindow",
+      );
+    }
+    file.contextWindows[key] = Math.floor(contextWindow);
+  }
+  await save(file);
+  return contextWindowFor(file, providerId, modelId);
+}
+
 /** 是否值得再自动探测（连续失败太多次就不再催） */
 export function shouldSuggestProbe(file: ModelsFile, providerId: string, modelId: string): boolean {
   const record = file.capabilities[capabilityKey(providerId, modelId)];
@@ -419,6 +451,8 @@ export interface SelectionView {
     modelName: string;
     baseUrl: string;
     vision: boolean | null;
+    /** 上下文窗口（tokens）；null = 未知（上下文压缩退回上游默认阀值） */
+    contextWindow: number | null;
     origin: "agent" | "default" | "env";
   } | null;
 }
@@ -455,6 +489,7 @@ export async function getSelection(workspacePath: string, normalizedWorkspace: s
           modelName,
           baseUrl: resolved.baseUrl,
           vision: resolved.vision,
+          contextWindow: resolved.contextWindow,
           origin: resolved.origin,
         }
       : null,

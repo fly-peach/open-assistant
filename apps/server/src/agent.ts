@@ -22,7 +22,7 @@
  */
 import { createMiddleware, ToolMessage } from "langchain";
 import { RobustChatOpenAI } from "./model.js";
-import { createDeepAgent, FilesystemBackend, type SubAgent } from "deepagents";
+import { createDeepAgent, createSummarizationMiddleware, FilesystemBackend, type SubAgent } from "deepagents";
 
 import { normalizeWorkspacePath, readWorkspacePathFromConfig } from "./workspace.js";
 import {
@@ -33,6 +33,7 @@ import {
 } from "./workspace-middleware.js";
 import { modelMiddleware } from "./models/middleware.js";
 import { buildChatModel, capabilityFor, resolveEffectiveModel } from "./models/resolve.js";
+import { compactionThresholds } from "./models/compaction.js";
 import { providerApiKey, readModelsFile } from "./models/store.js";
 import {
   loadTeam,
@@ -180,6 +181,7 @@ async function resolveDeclaredModel(
       apiKey,
       vision: capabilityFor(file, provider.id, declared.id).vision,
       origin: "agent",
+      contextWindow: null,
     });
   } catch (err) {
     console.warn(`[agent] 子 agent 指定模型 ${declared.id} 解析失败，回落主模型：`, err);
@@ -255,22 +257,89 @@ async function loadSubAgents(config: unknown): Promise<SubAgent[]> {
   }
 }
 
+/* ------------------------------------------------------- 上下文压缩配置 */
+
+/** 当次 run 的工作区 → 有效模型 → 上下文窗口（tokens）；解析不出来 → null */
+async function resolveContextWindow(config?: unknown): Promise<number | null> {
+  const raw = readWorkspacePathFromConfig(config);
+  if (!raw) return null;
+  let workspace: string;
+  try {
+    workspace = normalizeWorkspacePath(raw);
+  } catch {
+    return null;
+  }
+  try {
+    const resolved = await resolveEffectiveModel(workspace);
+    return resolved?.contextWindow ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 上下文压缩中间件（deepagents 的 summarization）。
+ *
+ * ## 为什么要自己兜一份
+ *
+ * `createDeepAgent` 默认已经装了 `createSummarizationMiddleware`，但它的阈值来自
+ * **模型 profile 的 `maxInputTokens`**；我们的模型（如 `deepseek-v4.1-flash`）没有 profile
+ * （实测 `profile: {}`），于是它退化成**写死的 170,000 tokens / 保留最近 6 条消息** ——
+ * 任何窗口比 170k 小的模型正常路径下**永远不会触发**，直到 provider 报上下文超限才靠兜底摘要救一次。
+ *
+ * 所以这里用**我们配置的窗口**（`models.json` → 模型能力，可在「模型」页指定）显式接管：
+ * 触发 = `0.8 × 窗口`、保留 = `0.1 × 窗口`。
+ * 中间件与默认那份**同名**（`SummarizationMiddleware`），deepagents 的 `mergeMiddlewareStack`
+ * 会按 name 原地替换，所以位置与职责不变。
+ *
+ * 窗口未知（没有先验、用户也没指定）时返回 `null`：不猜，让默认行为兜着。
+ */
+function buildSummarizationMiddleware(
+  backend: () => FilesystemBackend,
+  contextWindow: number | null,
+) {
+  const thresholds = compactionThresholds(contextWindow);
+  if (!thresholds) return null;
+  return createSummarizationMiddleware({
+    backend,
+    trigger: { type: "tokens", value: thresholds.trigger },
+    keep: { type: "tokens", value: thresholds.keep },
+    // 显式给了 trigger，deepagents 就不再算 profile 默认值；工具参数截断跟着显式给，
+    // 与默认行为保持一致（≥20 条消息时截断 >2000 字符的工具参数）
+    truncateArgsSettings: {
+      trigger: { type: "messages", value: 20 },
+      keep: { type: "messages", value: 20 },
+      maxLength: 2000,
+    },
+  });
+}
+
 /**
  * 图出口：**工厂函数**（每次 run 用当次 config 求值一次，见文件头注释）。
  * 对象导出会让团队声明只在进程启动时读一次 —— 那是本变更要修的核心问题。
  */
 export const agent = async (config?: unknown) => {
   const subagents = await loadSubAgents(config);
+  // 工作区可在 run 期变化 → backend 与上下文压缩阀值都按当次 config 求值
+  const backend = () =>
+    new FilesystemBackend({
+      // beforeAgent 已完成存在性 / 可读写校验；这里只需词法归一化即可作为 backend 根
+      rootDir: normalizeWorkspacePath(requireWorkspacePath()),
+      virtualMode: true,
+    });
+  const summarization = buildSummarizationMiddleware(backend, await resolveContextWindow(config));
   return createDeepAgent({
     model,
     systemPrompt: SYSTEM_PROMPT,
     tools: APP_TOOLS,
-    backend: () => {
-      // beforeAgent 已完成存在性 / 可读写校验；这里只需词法归一化即可作为 backend 根
-      const dir = normalizeWorkspacePath(requireWorkspacePath());
-      return new FilesystemBackend({ rootDir: dir, virtualMode: true });
-    },
-    middleware: [agentBindingMiddleware, workspaceMiddleware, modelMiddleware],
+    backend,
+    middleware: [
+      // 同名（SummarizationMiddleware）→ 原地替换 deepagents 默认那份（见上面的说明）
+      ...(summarization ? [summarization] : []),
+      agentBindingMiddleware,
+      workspaceMiddleware,
+      modelMiddleware,
+    ],
     subagents,
   });
 };

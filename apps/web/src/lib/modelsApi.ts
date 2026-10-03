@@ -50,6 +50,10 @@ export interface ModelView {
   /** null = 未知（未探测且清单里没写） */
   vision: boolean | null;
   visionSource: CapabilitySource;
+  /** 上下文窗口（tokens）；null = 未知（上下文压缩退回上游默认阀值） */
+  contextWindow: number | null;
+  /** 窗口数字是谁给的：manual > catalog > unknown */
+  contextWindowSource: CapabilitySource;
   probedAt?: string;
 }
 
@@ -166,6 +170,11 @@ function normalizeModels(raw: unknown): ModelView[] {
         source: (asString(record.source) ?? "manual") as ModelSource,
         vision: asBool(record.vision),
         visionSource: (asString(record.visionSource) ?? "unknown") as CapabilitySource,
+        contextWindow:
+          typeof record.contextWindow === "number" && record.contextWindow > 0
+            ? record.contextWindow
+            : null,
+        contextWindowSource: (asString(record.contextWindowSource) ?? "unknown") as CapabilitySource,
       };
       const probedAt = asString(record.probedAt);
       if (probedAt) model.probedAt = probedAt;
@@ -296,6 +305,18 @@ export function clearCapability(providerId: string, modelId: string): Promise<vo
     method: "DELETE",
     body: JSON.stringify({ providerId, modelId }),
   }).then(() => undefined);
+}
+
+/** 手工指定 / 清除模型的上下文窗口（tokens）；传 null 清除 */
+export function setModelContextWindow(
+  providerId: string,
+  modelId: string,
+  contextWindow: number | null
+): Promise<{ contextWindow: number | null; source: string }> {
+  return request<{ contextWindow: number | null; source: string }>("/models/context-window", {
+    method: "PUT",
+    body: JSON.stringify({ providerId, modelId, contextWindow }),
+  });
 }
 
 export function getSelection(workspace: string): Promise<SelectionView> {

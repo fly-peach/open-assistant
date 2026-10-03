@@ -121,6 +121,7 @@ bun run --cwd apps/web test                   # 前端测试
 ### 模型
 
 供应商与模型清单在这里配（每个供应商是一个 expander）；智能体可以各自指定模型，留空则跟随全局默认。
+每个模型还能填**上下文窗口**（tokens）—— 它决定上下文压缩的阀值（见下），空 = 未知。
 
 ![模型](docs/images/models.png)
 
@@ -167,6 +168,33 @@ ask_agent(to, text)    → 让对端在它自己的工作区里跑一轮，把�
 | `GET /agents/{id}/skills` · `POST /agents/{id}/skills` · `POST /agents/{id}/skills/upload` · `PUT/DELETE /agents/{id}/skills/{name}` | 技能查看 / 新建 / 上传文件夹 / 启停 / 删除 |
 | `GET/PATCH/DELETE /workspace/sessions[/{id}]` · `POST /workspace/sessions/{id}/compact` · `GET …/replay` · `GET …/search` | 会话列表 / 重命名 / 删除 / 压缩 / 重放窗口 / 检索 |
 | `POST /fs/pick-folder` | 弹本机系统「选择文件夹」对话框（`?probe=1` 只看命令不弹框） |
+
+---
+
+## 上下文压缩
+
+分两层，不要混：
+
+### 1）模型上下文（真正发出去的那份）
+
+由 **deepagents 的 `SummarizationMiddleware`** 负责：超阀值 → 把旧消息摘要成一条 `HumanMessage`、
+旧消息 offload 到工作区的 `conversation_history/`，保留最近一段。
+
+**阀值由我们自己定**（`agent.ts` 显式接管，中间件同名替换）：
+
+```
+触发 = 0.8 × 上下文窗口（tokens）
+保留 = 0.1 × 上下文窗口
+```
+
+上下文窗口在「模型」页每个模型一行里配（或内置先验，如 `deepseek-chat` = 65536），
+存 `~/.open-assistant/models.json`（`contextWindows`），路由 `PUT /models/context-window`。
+**窗口未知时不猜**，退回上游默认（否则会退化成写死的 170k，窗口比它小的模型永远不触发）。
+
+### 2）记录层（库侧）
+
+`conversation/compaction.ts`：按**轮次**标记 `compacted_by` + 确定性摘要 + 冷会话重放窗口 +
+保留期 + 检索。它保证「压缩不静默丢失」，但**不改变模型实际看到的消息**。
 
 ---
 
@@ -294,7 +322,7 @@ ROADMAP.md          实现现状
 界面外壳（可停靠面板 / 回合聚合 / 工具卡片 / 首次运行引导 / 配置页与模型页 expander / 技能弹窗）、
 运行时（`RobustChatOpenAI` 修上游 bug / 429 退避重试）。
 
-验证：后端 **456** 测试、前端 **208** 测试、会话库（Node）**27** 测试；两端 `tsc --noEmit` 干净；`next build` 通过。
+验证：后端 **463** 测试、前端 **208** 测试、会话库（Node）**27** 测试；两端 `tsc --noEmit` 干净；`next build` 通过。
 
 ---
 

@@ -100,6 +100,22 @@ export function capabilityFor(file: ModelsFile, providerId: string, modelId: str
 }
 
 /**
+ * 上下文窗口（tokens）：**手工指定 > 内置先验 > 未知**。
+ * 未知时上层（上下文压缩）退回上游默认阀值，不猜。
+ */
+export function contextWindowFor(
+  file: ModelsFile,
+  providerId: string,
+  modelId: string,
+): { contextWindow: number | null; source: CapabilitySource } {
+  const manual = file.contextWindows[capabilityKey(providerId, modelId)];
+  if (typeof manual === "number" && manual > 0) return { contextWindow: manual, source: "manual" };
+  const builtin = builtinModels(providerId).find((m) => m.id === modelId)?.contextWindow;
+  if (typeof builtin === "number" && builtin > 0) return { contextWindow: builtin, source: "catalog" };
+  return { contextWindow: null, source: "unknown" };
+}
+
+/**
  * 列出可选模型：内置参考清单 ∪ 用户手工补充（∪ 可选远端清单）。
  *
  * `remoteProviderIds` 由 HTTP 层在「用户点了刷新」时传入（远端拉取要几秒，
@@ -114,6 +130,7 @@ export function listModelViews(file: ModelsFile, remote?: Map<string, string[]>)
       if (seen.has(id)) return;
       seen.add(id);
       const capability = capabilityFor(file, provider.id, id);
+      const window = contextWindowFor(file, provider.id, id);
       const builtinName = builtinModels(provider.id).find((m) => m.id === id)?.name;
       views.push({
         providerId: provider.id,
@@ -124,6 +141,8 @@ export function listModelViews(file: ModelsFile, remote?: Map<string, string[]>)
         source,
         vision: capability.vision,
         visionSource: capability.source,
+        contextWindow: window.contextWindow,
+        contextWindowSource: window.source,
         ...(capability.probedAt ? { probedAt: capability.probedAt } : {}),
       });
     };
@@ -153,6 +172,7 @@ function envFallback(): ResolvedModelConfig | null {
     baseUrl,
     apiKey: apiKey ?? "",
     vision: null,
+    contextWindow: null,
     origin: "env",
   };
 }
@@ -190,6 +210,7 @@ export async function resolveEffectiveModel(
           baseUrl: configured.baseUrl?.trim() || owner.baseUrl,
           apiKey: providerApiKey(owner, env),
           vision: capability.vision,
+          contextWindow: contextWindowFor(file, owner.id, configured.id).contextWindow,
           origin: "agent",
         };
       }
@@ -207,6 +228,7 @@ export async function resolveEffectiveModel(
         baseUrl: owner.baseUrl,
         apiKey: providerApiKey(owner, env),
         vision: capability.vision,
+        contextWindow: contextWindowFor(file, owner.id, file.defaultModelId).contextWindow,
         origin: "default",
       };
     }

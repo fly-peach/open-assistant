@@ -96,7 +96,7 @@ function seedProvider(presetId: string, env: NodeJS.ProcessEnv): ProviderRecord 
 /** 播种整份文件（内置三家 + 老环境变量认出的默认模型） */
 export function seedModelsFile(env: NodeJS.ProcessEnv = process.env): ModelsFile {
   const providers = BUILTIN_PROVIDERS.map((preset) => seedProvider(preset.id, env));
-  const file: ModelsFile = { version: 1, providers, capabilities: {} };
+  const file: ModelsFile = { version: 1, providers, capabilities: {}, contextWindows: {} };
   const legacyModel = env["MODEL_ID"]?.trim();
   if (legacyModel) {
     // 老配置只有「模型 id + baseUrl」，认到与之 baseUrl 相同的供应商名下
@@ -108,6 +108,17 @@ export function seedModelsFile(env: NodeJS.ProcessEnv = process.env): ModelsFile
     if (!owner.models.includes(legacyModel)) owner.models.push(legacyModel);
   }
   return file;
+}
+
+/** 手工指定的上下文窗口：只收正数，脏数据丢弃 */
+function normalizeContextWindows(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) out[key] = Math.floor(n);
+  }
+  return out;
 }
 
 /** 归一化读到的文件（缺字段补默认，脏数据不整体崩） */
@@ -145,7 +156,8 @@ export function normalizeModelsFile(raw: unknown): ModelsFile {
     record["capabilities"] && typeof record["capabilities"] === "object"
       ? (record["capabilities"] as ModelsFile["capabilities"])
       : {};
-  const file: ModelsFile = { version: 1, providers, capabilities };
+  const contextWindows = normalizeContextWindows(record["contextWindows"]);
+  const file: ModelsFile = { version: 1, providers, capabilities, contextWindows };
   if (typeof record["defaultProviderId"] === "string") file.defaultProviderId = record["defaultProviderId"];
   if (typeof record["defaultModelId"] === "string") file.defaultModelId = record["defaultModelId"];
   return file;
